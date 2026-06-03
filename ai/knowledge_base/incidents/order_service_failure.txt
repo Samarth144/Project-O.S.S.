@@ -1,0 +1,5 @@
+Incident Title: Order Service Failure (INC-105)
+Root Cause: Memory leak in the Order Service following the deployment of version 2.4.1.
+Impact: Rolling restarts of pods led to intermittent failures in order processing for 1 hour.
+Resolution: Reverted to version 2.4.0 and fixed the memory leak in the message consumer logic.
+Lessons Learned: Enhance memory profiling in the CI/CD pipeline and implement canary deployments.

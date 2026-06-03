@@ -1,0 +1,7 @@
+Runbook: Identity Provider (IdP) Issues
+Step 1: Attempt to log in via a test account to reproduce the issue.
+Step 2: Inspect SSL certificate expiry date using `openssl s_client -connect idp.aegis.io:443`.
+Step 3: Check Cert-Manager logs for any renewal failures.
+Step 4: Manually trigger renewal if necessary.
+Step 5: Clear Gateway cache to ensure new certificate is served.
+Escalation: Contact Security Operations.

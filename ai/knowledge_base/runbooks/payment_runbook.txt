@@ -1,0 +1,7 @@
+Runbook: Payment Service Troubleshooting
+Step 1: Verify Payment Gateway status via health check endpoint (/health/payments).
+Step 2: Check connection pool metrics in Grafana (Prometheus datasource).
+Step 3: If pool is exhausted, scale the Payment Service to 5 replicas.
+Step 4: If timeouts persist, check if the external gateway is responding within 2s.
+Step 5: Notify the #payment-alerts Slack channel.
+Escalation: Contact the Fintech Platform Team on PagerDuty.

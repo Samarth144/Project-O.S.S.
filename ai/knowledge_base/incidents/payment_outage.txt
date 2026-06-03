@@ -1,0 +1,5 @@
+Incident Title: Payment Gateway Timeout (INC-101)
+Root Cause: Connection pool exhaustion in the Payment Service due to a sudden spike in traffic from the mobile application.
+Impact: 45% of checkout attempts failed for 30 minutes. Estimated revenue loss: $15,000.
+Resolution: Increased the max connection pool size from 20 to 100 and implemented a circuit breaker pattern.
+Lessons Learned: Need better horizontal scaling and proactive monitoring of connection pool metrics.

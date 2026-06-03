@@ -1,0 +1,7 @@
+Runbook: API Gateway Latency Mitigation
+Step 1: Identify slow downstream services using Zipkin/Jaeger traces.
+Step 2: Check API Gateway CPU and memory usage.
+Step 3: Adjust the global timeout settings in the ConfigMap if a specific service is lagging.
+Step 4: Enable 'Stale-While-Revalidate' caching on the Gateway for high-traffic endpoints.
+Step 5: Restart Gateway pods if memory usage is >90%.
+Escalation: Contact Platform Engineering.

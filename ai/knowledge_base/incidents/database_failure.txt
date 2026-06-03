@@ -1,0 +1,5 @@
+Incident Title: Primary Database Failure (INC-102)
+Root Cause: Disk failure on the primary PostgreSQL node leading to data corruption in the transaction log.
+Impact: Full platform downtime for 45 minutes. No data loss occurred due to synchronous replication.
+Resolution: Failed over to the secondary replica and restored the primary node using a fresh EBS snapshot.
+Lessons Learned: Implement automated failover testing every quarter and move to a multi-AZ managed database service.

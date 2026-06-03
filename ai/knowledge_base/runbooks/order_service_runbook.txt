@@ -1,0 +1,7 @@
+Runbook: Order Service Memory Leak Response
+Step 1: Check memory usage trend in Kubernetes metrics.
+Step 2: If Pods are OOMKilled, increase memory limit temporarily.
+Step 3: Collect heap dump from the JVM/Node.js process.
+Step 4: Roll back to the previous stable image version.
+Step 5: Monitor the restart frequency of the pods.
+Escalation: Contact Backend Development Lead.

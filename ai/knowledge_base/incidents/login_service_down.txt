@@ -1,0 +1,5 @@
+Incident Title: Login Service Down (INC-103)
+Root Cause: Expired SSL certificate on the identity provider (IdP) gateway.
+Impact: Users were unable to log in via OIDC for 2 hours. Active sessions remained unaffected.
+Resolution: SSL certificate was renewed and auto-renewal was configured via Cert-Manager.
+Lessons Learned: Monitoring for certificate expiration must be integrated into the alerting system.

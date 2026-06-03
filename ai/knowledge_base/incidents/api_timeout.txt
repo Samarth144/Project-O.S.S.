@@ -1,0 +1,5 @@
+Incident Title: API Gateway Timeout (INC-104)
+Root Cause: Downstream microservice (Inventory) was responding slowly, causing the API Gateway's worker threads to block.
+Impact: Latency increased to >10s for all product-related API calls.
+Resolution: Reduced the Inventory service timeout on the Gateway and enabled response caching.
+Lessons Learned: Implement strict timeouts and retries for all downstream dependencies.

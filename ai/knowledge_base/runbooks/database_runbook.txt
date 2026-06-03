@@ -1,0 +1,7 @@
+Runbook: Database Failover Procedure
+Step 1: Confirm primary node is unreachable using `pg_isready`.
+Step 2: Check replica lag on the secondary node.
+Step 3: Initiate failover by promoting the replica: `touch /tmp/postgresql.trigger.5432`.
+Step 4: Update application connection strings (DNS or environment variables).
+Step 5: Verify new primary is accepting write connections.
+Escalation: Contact the DBA On-call.
