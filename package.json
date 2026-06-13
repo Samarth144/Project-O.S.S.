@@ -1,0 +1,17 @@
+{
+  "name": "incident-simulation-app",
+  "version": "1.0.0",
+  "description": "Express.js incident simulation mini-application for observability training.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.0",
+    "express": "^4.21.2",
+    "node-fetch": "^2.7.0",
+    "winston": "^3.17.0"
+  },
+  "author": "Senior Backend Architect",
+  "license": "MIT"
+}

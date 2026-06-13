@@ -1,12 +1,26 @@
-.env
+# Dependencies
 node_modules/
-logs/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
 __pycache__/
 *.pyc
-.DS_Store
-
-# Local artifacts
 venv/
 .venv/
 ai/venv/
+
+# Environments and Secrets
+.env
+
+# Logs and Storage
+logs/*.log
+*.log
+*.db
+*.db-journal
 chroma_db/
+
+# OS Metadata
+.DS_Store
+Thumbs.db

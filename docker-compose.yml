@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: incident-simulation-app
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+    volumes:
+      - ./project_oss.db:/usr/src/app/project_oss.db
+      - ./project_oss.log:/usr/src/app/project_oss.log
+    restart: unless-stopped
