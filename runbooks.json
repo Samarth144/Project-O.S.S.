@@ -1,0 +1,141 @@
+[
+  {
+    "incident_type": "payment_down",
+    "typical_causes": [
+      "Third-party payment gateway service provider outage.",
+      "Expired SSL/TLS client certificates or authentication API tokens.",
+      "Connection socket timeouts under high concurrency loads."
+    ],
+    "fix_steps": [
+      "Check the external status page of upstream payment providers (e.g., Stripe, PayPal).",
+      "Verify gateway connection credentials and validate token expiration status.",
+      "Trigger failover script to route traffic through the secondary payment partner.",
+      "Restart the payment processor container to clear hung sockets."
+    ],
+    "avg_resolution_minutes": 15,
+    "severity": "critical",
+    "user_message_template": "We are experiencing temporary difficulties processing credit card payments. Our engineers are investigating. Your billing details are safe; please wait before retrying."
+  },
+  {
+    "incident_type": "db_down",
+    "typical_causes": [
+      "Database server disk storage exhaustion.",
+      "Connection pool exhaustion due to leaking transactions.",
+      "Unoptimized query locking database index files.",
+      "Hardware failure or network partition on DB cluster node."
+    ],
+    "fix_steps": [
+      "Check disk space usage on the primary database host.",
+      "Analyze connection counts and terminate orphaned client connections.",
+      "Identify and kill long-running exclusive locks in the process list.",
+      "Failover database primary node to a hot replica state."
+    ],
+    "avg_resolution_minutes": 25,
+    "severity": "critical",
+    "user_message_template": "We are undergoing emergency database maintenance. Some account services, shopping carts, and history logs may be temporarily offline. We expect full recovery shortly."
+  },
+  {
+    "incident_type": "api_timeout",
+    "typical_causes": [
+      "Downstream inventory, address verification, or shipping API degradation.",
+      "Misconfigured gateway client socket timeout values.",
+      "High downstream latency causing local server worker starvation.",
+      "DNS resolution failure for partner endpoints."
+    ],
+    "fix_steps": [
+      "Identify the specific downstream integration route causing latency.",
+      "Verify DNS resolution and network path latency to downstream hosts.",
+      "Temporarily lower local socket timeout thresholds to fail fast.",
+      "Enable circuit breaker overrides to bypass non-critical integrations."
+    ],
+    "avg_resolution_minutes": 12,
+    "severity": "high",
+    "user_message_template": "An integrated partner service is taking longer than usual to respond. Some functions may load slowly. We are modifying route priorities to bypass the delay."
+  },
+  {
+    "incident_type": "high_error_rate",
+    "typical_causes": [
+      "Syntax errors introduced in a recent deployment release.",
+      "Broken upstream dependency or package configuration changes.",
+      "Environment variable or credentials mismatch in system config.",
+      "Heavy load causing service threshold limits to exhaust (HTTP 429/503)."
+    ],
+    "fix_steps": [
+      "Check server deployment version logs and pull recent Git commit diffs.",
+      "Verify system environment variables and secrets are populated correctly.",
+      "Trigger automated rollback to the last stable deployment revision.",
+      "Scale up container instances to distribute application traffic load."
+    ],
+    "avg_resolution_minutes": 10,
+    "severity": "high",
+    "user_message_template": "We are experiencing an elevated frequency of errors across our systems. We have initiated a rollback to restore stability and regret the inconvenience."
+  },
+  {
+    "incident_type": "checkout_failure",
+    "typical_causes": [
+      "Database inventory table locking preventing stock changes.",
+      "Discrepancies in cart item payload parsing on checkout routes.",
+      "Corrupted item session caches in Redis or local memory."
+    ],
+    "fix_steps": [
+      "Check database lock queues and verify inventory table health.",
+      "Inspect checkout logs for JSON payload serialization issues.",
+      "Flush temporary cart cache clusters and verify schema validation rules.",
+      "Restart the checkout API instance to clear locked cart threads."
+    ],
+    "avg_resolution_minutes": 20,
+    "severity": "high",
+    "user_message_template": "We detected an error while finalizing your order checkout. Your cart items have been saved. Please refresh the page or try completing the checkout in a few minutes."
+  },
+  {
+    "incident_type": "authentication_failure",
+    "typical_causes": [
+      "Redis session backend container is offline or unreachable.",
+      "JWT key rotation failure or expired cryptographic secrets.",
+      "Auth database service capacity overload or slow read speeds."
+    ],
+    "fix_steps": [
+      "Verify Redis container status and check network accessibility.",
+      "Check authentication token secrets configurations in environment files.",
+      "Monitor read latency on the credentials database table.",
+      "Scale session and token validation nodes to handle high login demand."
+    ],
+    "avg_resolution_minutes": 8,
+    "severity": "medium",
+    "user_message_template": "We are experiencing issues processing user sign-ins and session validations. Active sessions are safe. Please hold on while we reconnect the identity server."
+  },
+  {
+    "incident_type": "service_degradation",
+    "typical_causes": [
+      "High CPU/Memory usage on core API worker instances.",
+      "Network routing issues within the internal VPC cluster.",
+      "Slow database disk I/O performance on read queries."
+    ],
+    "fix_steps": [
+      "Analyze resource usage metrics across nodes (CPU, RAM, load averages).",
+      "Scale server resource capacity using horizontal auto-scaling rules.",
+      "Deploy read replicas to reduce queries on primary database server.",
+      "Reroute network traffic paths within regional clusters."
+    ],
+    "avg_resolution_minutes": 30,
+    "severity": "medium",
+    "user_message_template": "Our platform is currently operating at reduced speeds. Page loading times may be higher than average. We are scaling resources to bring speeds back to normal."
+  },
+  {
+    "incident_type": "disk_space_critical",
+    "typical_causes": [
+      "App debug logging level generating excessive file writes.",
+      "Failure of cron log rotation jobs on system servers.",
+      "Orphaned temporary download files remaining in directories."
+    ],
+    "fix_steps": [
+      "Locate the largest directories using disk usage commands.",
+      "Verify logrotate processes are running and trigger manual rotation.",
+      "Clean temp folders and delete orphaned Docker images/volumes.",
+      "Re-allocate or expand target storage disk volume partitions."
+    ],
+    "avg_resolution_minutes": 15,
+    "severity": "high",
+    "user_message_template": "We are currently conducting preventative maintenance on our storage storage cluster. Service is operational, but temporary files may process slower than normal."
+  }
+]

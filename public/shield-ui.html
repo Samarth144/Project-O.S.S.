@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project O.S.S. Shield — Support</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/shield-ui.css">
+</head>
+<body>
+
+<div id="status-bar">
+  <div class="status-dot" id="status-dot"></div>
+  <span id="status-label">Connecting to Project O.S.S....</span>
+  <span id="status-detail"></span>
+  <span id="eta-badge"></span>
+</div>
+
+<div id="main">
+  <div id="sidebar">
+    <div>
+      <div class="sidebar-heading">Incident Status</div>
+      <div id="incident-details">
+        <div class="no-incident">
+          <div style="font-size:22px;color:var(--success)">&#10003;</div>
+          <div>Checking status...</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="sidebar-heading">Quick Questions</div>
+      <button class="quick-btn" onclick="sendQuick('What is currently broken?')">What is currently broken?</button>
+      <button class="quick-btn" onclick="sendQuick('Will my payment go through right now?')">Will my payment go through?</button>
+      <button class="quick-btn" onclick="sendQuick('How long until this is fixed?')">How long until this is fixed?</button>
+      <button class="quick-btn" onclick="sendQuick('Has my order data been lost?')">Is my data safe?</button>
+    </div>
+  </div>
+
+  <div id="chat-area">
+    <div id="chat-header">
+      <div class="shield-avatar">S</div>
+      <div>
+        <div class="chat-title">Shield — Support Agent</div>
+        <div class="chat-subtitle">Powered by Project O.S.S. · Real-time incident intelligence</div>
+      </div>
+    </div>
+    <div id="messages">
+      <div class="message ai">
+        <div class="msg-avatar ai-av">S</div>
+        <div class="msg-wrapper">
+          <div class="msg-bubble">Hi! I'm Shield. I have live access to our engineering systems, so I can give you specific, real-time answers — not generic updates. What's going on for you?</div>
+          <div class="msg-time">now</div>
+        </div>
+      </div>
+    </div>
+    <div id="input-area">
+      <textarea id="user-input" placeholder="Describe your issue..." rows="1"></textarea>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/shield-ui.js"></script>
+</body>
+</html>
