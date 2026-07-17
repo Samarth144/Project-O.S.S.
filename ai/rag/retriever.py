@@ -7,7 +7,6 @@ class AegisRetriever:
 
     def search(self, query):
         """Searches the vector store for the query and returns relevant documents."""
-        print(f"Searching for: {query}")
         results = self.retriever.invoke(query)
         return results
 

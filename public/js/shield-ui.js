@@ -138,5 +138,23 @@ async function pollStatus() {
   }
 }
 
+async function pollPreAlert() {
+  try {
+    const res = await fetch(`${API}/api/pre-alert`);
+    const data = await res.json();
+    const banner = document.getElementById('pre-alert-banner');
+    if (data.active && data.preAlert) {
+      banner.style.display = 'block';
+      banner.textContent = '⚠️ ' + data.preAlert.message;
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) {
+    console.error('Failed to poll pre-alerts:', e);
+  }
+}
+
 pollStatus();
+pollPreAlert();
 setInterval(pollStatus, 5000);
+setInterval(pollPreAlert, 10000);

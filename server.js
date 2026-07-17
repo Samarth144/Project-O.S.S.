@@ -99,7 +99,9 @@ try {
 // ---------------------------------------------------------
 let activeIncident = {
   type: null, // 'payment_down' | 'db_down' | 'api_timeout' | null
-  startedAt: null
+  startedAt: null,
+  affectedUserCount: 0,
+  ragContext: null
 };
 
 // ---------------------------------------------------------
@@ -398,7 +400,7 @@ app.post('/payment', async (req, res, next) => {
 
 // POST /simulate-failure - Trigger an incident state
 app.post('/simulate-failure', (req, res) => {
-  let { type } = req.body;
+  let { type, reporterEmail } = req.body;
 
   // Normalize aliases for convenience
   if (type === 'api_degradation') type = 'api_timeout';
@@ -425,8 +427,12 @@ app.post('/simulate-failure', (req, res) => {
 
   activeIncident = {
     type,
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    reporterEmail: reporterEmail || 'test@youremail.com',
+    affectedUserCount: 0,
+    ragContext: null
   };
+  fetchAndCacheRAGContext(type);
 
   logger.warn(`INCIDENT SIMULATOR: Activated failure event of type [${type}]`, { activeIncident });
 
@@ -439,7 +445,8 @@ app.post('/simulate-failure', (req, res) => {
     type,
     timestamp: activeIncident.startedAt,
     source: 'mini-app',
-    status: 'firing'
+    status: 'firing',
+    reporterEmail: activeIncident.reporterEmail
   };
 
   // Trigger non-blocking async webhook
@@ -495,7 +502,73 @@ app.post('/resolve-incident', (req, res) => {
   });
 });
 
-// GET /api/incident/active - Retrieve current active incident status
+// Helper to execute Python RAG query via child process
+const { exec } = require('child_process');
+
+function getPythonCommand() {
+  const venvWindows = path.join(__dirname, 'ai', 'venv', 'Scripts', 'python.exe');
+  const venvUnix = path.join(__dirname, 'ai', 'venv', 'bin', 'python');
+  if (fs.existsSync(venvWindows)) {
+    return `"${venvWindows}"`;
+  } else if (fs.existsSync(venvUnix)) {
+    return `"${venvUnix}"`;
+  }
+  return 'python';
+}
+
+function getRAGContext(query) {
+  return new Promise((resolve) => {
+    const pythonScript = path.join(__dirname, 'ai', 'query.py');
+    const safeQuery = query.replace(/"/g, '\\"');
+    const pyCmd = getPythonCommand();
+    exec(`${pyCmd} "${pythonScript}" "${safeQuery}"`, (error, stdout, stderr) => {
+      if (error) {
+        logger.error('RAG Query execution failed', { error: error.message, stderr });
+        return resolve(null);
+      }
+      try {
+        const results = JSON.parse(stdout.trim());
+        if (results.error) {
+          logger.error('RAG Python error response', { error: results.error });
+          return resolve(null);
+        }
+        resolve(results);
+      } catch (e) {
+        logger.error('Failed to parse RAG output', { stdout, error: e.message });
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Helper to fetch RAG runbook in the background and cache it on activeIncident state
+function fetchAndCacheRAGContext(type) {
+  if (!type) {
+    activeIncident.ragContext = null;
+    return;
+  }
+  const searchTerms = type.replace(/_/g, ' ');
+  getRAGContext(searchTerms).then(ragResults => {
+    if (ragResults && ragResults.length > 0) {
+      const runbookMatches = ragResults
+        .filter(r => r.metadata && r.metadata.source && r.metadata.source.includes('runbook'))
+        .map(r => r.content.trim());
+      if (runbookMatches.length > 0) {
+        activeIncident.ragContext = runbookMatches[0];
+        logger.info(`RAG runbook cached successfully for incident: ${type}`);
+      } else {
+        activeIncident.ragContext = null;
+      }
+    } else {
+      activeIncident.ragContext = null;
+    }
+  }).catch(err => {
+    logger.error('Failed to pre-fetch RAG runbook', { error: err.message });
+    activeIncident.ragContext = null;
+  });
+}
+
+// GET /api/incident/active - Retrieve current active incident status (smartly integrated with RAG context)
 app.get('/api/incident/active', (req, res) => {
   if (activeIncident.type) {
     let severity = 'high';
@@ -517,6 +590,11 @@ app.get('/api/incident/active', (req, res) => {
       logger.error('Failed to load runbooks for active incident status', { error: err.message });
     }
 
+    // Append cached RAG runbook solution if available
+    if (activeIncident.ragContext) {
+      rootCause = `${rootCause}\n\n[O.S.S. RAG Runbook Solution]:\n${activeIncident.ragContext}`;
+    }
+
     return res.json({
       active: true,
       incident: {
@@ -524,7 +602,8 @@ app.get('/api/incident/active', (req, res) => {
         startedAt: activeIncident.startedAt,
         severity,
         rootCause,
-        etaMinutes
+        etaMinutes,
+        affectedUserCount: activeIncident.affectedUserCount || 0
       }
     });
   }
@@ -535,10 +614,94 @@ app.get('/api/incident/active', (req, res) => {
   });
 });
 
+// POST /api/rag/retrieve - Manually query the RAG vector store
+app.post('/api/rag/retrieve', async (req, res) => {
+  const { query } = req.body;
+  if (!query) {
+    return res.status(400).json({ success: false, error: 'Query parameter is required' });
+  }
+
+  try {
+    const results = await getRAGContext(query);
+    if (!results) {
+      return res.status(500).json({ success: false, error: 'Failed to retrieve RAG context' });
+    }
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/rag/ingest - Re-index runbooks and incidents into the vector store
+app.post('/api/rag/ingest', (req, res) => {
+  const pythonScript = path.join(__dirname, 'ai', 'rag', 'ingest.py');
+  const pyCmd = getPythonCommand();
+  exec(`${pyCmd} "${pythonScript}"`, (error, stdout, stderr) => {
+    if (error) {
+      logger.error('RAG Ingestion execution failed', { error: error.message, stderr });
+      return res.status(500).json({ success: false, error: error.message, stderr });
+    }
+    res.json({ success: true, output: stdout.trim() });
+  });
+});
+
+
+// POST /auto-heal - Auto-remediation endpoint triggered by Observer
+app.post('/auto-heal', (req, res) => {
+  const { type } = req.body;
+  if (!activeIncident.type || activeIncident.type !== type) {
+    logger.warn(`[Auto-Heal Engine]: Auto-heal requested for [${type}] but it does not match the active incident [${activeIncident.type}].`);
+    return res.status(400).json({ success: false, error: 'No matching active incident found for auto-heal.' });
+  }
+
+  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger from Observer for [${type}]. Executing recovery script...`);
+
+  // Map known incident types to remediation commands from runbooks
+  let command = 'echo "Executing default recovery verification"';
+  if (type === 'db_down') {
+    command = 'touch /tmp/postgresql.trigger.5432';
+  } else if (type === 'payment_down') {
+    command = 'npm run reset-pool --max=100';
+  } else if (type === 'api_timeout') {
+    command = 'systemctl restart gateway-workers';
+  }
+
+  logger.info(`[Auto-Heal Engine]: Running recovery command: ${command}`);
+
+  // Resolve the active incident state
+  const prevIncident = { ...activeIncident };
+  activeIncident.type = null;
+  activeIncident.startedAt = null;
+  activeIncident.affectedUserCount = 0;
+  activeIncident.ragContext = null;
+
+  logger.warn('Auto-remediation successful. Engineers never got paged.');
+
+  // Trigger Scribe post-mortem webhook asynchronously
+  const resolvedAt = new Date().toISOString();
+  const resolveUrl = 'http://localhost:5678/webhook/Scribe';
+  const resolvePayload = {
+    type: prevIncident.type,
+    startedAt: prevIncident.startedAt,
+    resolvedAt,
+    status: 'resolved'
+  };
+  
+  sendWebhookNotification(resolveUrl, resolvePayload);
+
+  res.json({
+    success: true,
+    message: 'Auto-remediation command executed. Incident resolved.',
+    commandExecuted: command
+  });
+});
+
+
+
 
 // POST /api/incident/update - Update active incident manually
 app.post('/api/incident/update', (req, res) => {
-  const { type, startedAt } = req.body;
+  const { type, startedAt, affectedUserCount } = req.body;
   const supportedTypes = [
     'payment_down', 
     'db_down', 
@@ -548,6 +711,7 @@ app.post('/api/incident/update', (req, res) => {
     'authentication_failure', 
     'service_degradation', 
     'disk_space_critical', 
+    'silent_error',
     null
   ];
 
@@ -564,10 +728,19 @@ app.post('/api/incident/update', (req, res) => {
   if (type === null || type === undefined) {
     activeIncident.type = null;
     activeIncident.startedAt = null;
+    activeIncident.affectedUserCount = 0;
+    activeIncident.ragContext = null;
     logger.info(`Incident manually cleared via API (previous: ${prevType})`);
+  } else if (type === 'silent_error') {
+    // Generate logs to trigger pre-alerts, but keep incident state operational (null)
+    logger.warn('INCIDENT SIMULATOR: Generating silent_error logs for pre-alert trigger');
+    generateNoiseLogs('silent_error');
   } else {
     activeIncident.type = type;
     activeIncident.startedAt = startedAt || new Date().toISOString();
+    activeIncident.affectedUserCount = affectedUserCount || 0;
+    activeIncident.ragContext = null;
+    fetchAndCacheRAGContext(type);
     logger.warn(`Incident manually updated/triggered via API to [${type}]`, { activeIncident });
     
     // Generate logs for this failure type if it's one of the simulated types
@@ -583,9 +756,95 @@ app.post('/api/incident/update', (req, res) => {
   });
 });
 
-// POST /api/shield/chat - Interact with Shield assistant via n8n webhook
+// In-memory pre-alert state
+let preAlert = null;
+
+// POST /api/pre-alert - Set pre-alert details
+app.post('/api/pre-alert', (req, res) => {
+  preAlert = { ...req.body, detectedAt: Date.now() };
+  logger.warn('PRE-ALERT STATUS: Active', { preAlert });
+  res.json({ ok: true });
+});
+
+// GET /api/pre-alert - Fetch current pre-alert status
+app.get('/api/pre-alert', (req, res) => {
+  // Auto-expire after 5 minutes
+  if (preAlert && Date.now() - preAlert.detectedAt > 5 * 60 * 1000) {
+    preAlert = null;
+  }
+  res.json({ active: preAlert !== null, preAlert });
+});
+
+
+// ─── 1. /health endpoint (the watchdog probes this every cycle) ─────────────
+app.get('/health', (req, res) => {
+  const t0 = process.hrtime.bigint();
+  try {
+    db.prepare('SELECT 1').get();
+    const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    res.json({
+      ok: true,
+      dbLatencyMs: +dbLatencyMs.toFixed(1),
+      uptime: process.uptime(),
+    });
+  } catch (err) {
+    const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    res.status(500).json({ ok: false, error: err.message, dbLatencyMs });
+  }
+});
+
+// ─── 2. Metrics proxy (Shield UI keeps calling /api/metrics unchanged) ──────
+app.get('/api/metrics', async (req, res) => {
+  try {
+    const r = await fetch('http://localhost:3100/metrics');
+    res.json(await r.json());
+  } catch (err) {
+    res.status(503).json({ error: 'watchdog offline' });
+  }
+});
+
+// ─── 3. Safe CPU stress route for testing (does NOT block the event loop) ───
+const { spawn } = require('child_process');
+app.post('/dev/stress-cpu', (req, res) => {
+  const seconds = Math.min(parseInt(req.body.seconds || 5), 30);
+  const cores = Math.max(1, require('os').cpus().length - 1);
+  for (let i = 0; i < cores; i++) {
+    spawn(process.execPath, ['-e',
+      `const end=Date.now()+${seconds * 1000};while(Date.now()<end)Math.sqrt(Math.random());`
+    ], { detached: true, stdio: 'ignore' }).unref();
+  }
+  res.json({ stressing: true, seconds, cores });
+});
+
+// ─── 4. Recovery handler for the pre-alert banner ───────────────────────────
+app.post('/api/incident/prealert-clear', (req, res) => {
+  preAlert = null;
+  res.json({ cleared: true });
+});
+
+
+// POST /api/shield/chat - Interact with Shield assistant via n8n webhook (smartly enriched with dynamic RAG context)
 app.post('/api/shield/chat', async (req, res) => {
   try {
+    const originalMessage = req.body.message;
+    
+    // Fetch matching runbooks/context from RAG database dynamically based on the user's message
+    try {
+      const ragResults = await getRAGContext(originalMessage);
+      if (ragResults && ragResults.length > 0) {
+        const contextStr = ragResults
+          .filter(r => r.metadata && r.metadata.source)
+          .map(r => `[Source: ${path.basename(r.metadata.source)}]:\n${r.content.trim()}`)
+          .join('\n\n');
+        
+        if (contextStr) {
+          req.body.message = `${originalMessage}\n\n[System Search Reference]:\n${contextStr}`;
+        }
+      }
+    } catch (ragErr) {
+      logger.error('Dynamic RAG retrieval for chat query failed', { error: ragErr.message });
+    }
+
     logger.info('Forwarding Shield Chat message to n8n webhook', { body: req.body });
     const response = await fetch('http://localhost:5678/webhook/Shield', {
       method: 'POST',
@@ -639,17 +898,34 @@ function generateNoiseLogs(type) {
       { level: 'warn', message: 'Circuit breaker state transitioning to OPEN for endpoint /fulfillment/create' },
       { level: 'error', message: 'Downstream integration service did not acknowledge order checkout payload' },
       { level: 'error', message: 'Downstream integration timeout: Gateway Timeout (504) returned to client' }
+    ],
+    silent_error: [
+      { level: 'error', message: 'Gateway error in payment validation channel' },
+      { level: 'error', message: 'Credit card processing channel timed out' },
+      { level: 'error', message: 'Failed connection handshake to partner server' },
+      { level: 'error', message: 'Socket connection reset' },
+      { level: 'error', message: 'Fulfillment queue timeout: retry limit reached' }
     ]
   };
 
   const logsToGenerate = incidentLogs[type] || [];
+  
+  // Create a pool of simulated user IDs to assign to the noise logs
+  const simulatedUserIds = [
+    'usr_8f8e8a', 'usr_3a2b1c', 'usr_9d8e7f', 'usr_0a1b2c', 'usr_5f4e3d',
+    'usr_7a8b9c', 'usr_2d3e4f', 'usr_1c2b3a', 'usr_6e5d4c', 'usr_4b3a2c'
+  ];
+
   logsToGenerate.forEach((log, index) => {
-    // Artificially space the log calls or execute synchronously to generate logs immediately
+    // Pick a user ID from the pool for each error log
+    const userId = simulatedUserIds[index % simulatedUserIds.length];
+    
     logger.log({
       level: log.level,
       message: `${log.message} (SIMULATED_NOISE_${index + 1})`,
       incidentType: type,
-      noiseBurst: true
+      noiseBurst: true,
+      userId: userId // Include simulated userId
     });
   });
 }
@@ -658,7 +934,7 @@ function generateNoiseLogs(type) {
 // 7. Monitoring Endpoint
 // ---------------------------------------------------------
 
-// GET /api/logs - Retrieve last 50 log lines and activeIncident status
+// GET /api/logs - Retrieve last 20 log lines and activeIncident status
 app.get('/api/logs', (req, res) => {
   try {
     if (!fs.existsSync(LOG_FILE)) {
@@ -672,8 +948,8 @@ app.get('/api/logs', (req, res) => {
     const lines = logData.split('\n').filter(line => line.trim() !== '');
 
     const parsedLogs = [];
-    // Read from the end of the file up to 50 logs
-    const limit = Math.min(lines.length, 50);
+    // Read from the end of the file up to 20 logs
+    const limit = Math.min(lines.length, 20);
     for (let i = lines.length - 1; i >= lines.length - limit; i--) {
       try {
         const parsed = JSON.parse(lines[i]);

@@ -1,10 +1,17 @@
 import os
+import sys
+
+# Add the project root directory to the python path dynamically
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ai.rag.vector_store import VectorStoreManager
 
 class KnowledgeIngestor:
-    def __init__(self, base_dir="ai/knowledge_base"):
+    def __init__(self, base_dir=None):
+        if base_dir is None:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "knowledge_base"))
         self.base_dir = base_dir
         self.vsm = VectorStoreManager()
         self.text_splitter = RecursiveCharacterTextSplitter(
