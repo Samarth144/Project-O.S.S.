@@ -5,6 +5,24 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
+// ---------------------------------------------------------
+// SSE Subscriber Registry
+// ---------------------------------------------------------
+const sseClients = new Map(); // clientId -> res
+let sseClientCounter = 0;
+
+function broadcastSSE(eventName, data) {
+  const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const [id, res] of sseClients) {
+    try {
+      res.write(payload);
+    } catch (err) {
+      logger && logger.warn(`SSE write failed for client ${id}`, { error: err.message });
+      sseClients.delete(id);
+    }
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const LOG_FILE = 'project_oss.log';
@@ -110,6 +128,24 @@ let activeIncident = {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ---------------------------------------------------------
+// CORS — Allow frontend dev server (TanStack Start / Vite)
+// ---------------------------------------------------------
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    // Dynamically allow the requesting origin
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Silences favicon.ico 404 logs in browsers
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
@@ -179,6 +215,65 @@ async function sendWebhookNotification(url, payload) {
 
 // Timeout helper utility
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---------------------------------------------------------
+// n8n Webhook URLs
+// ---------------------------------------------------------
+const N8N_WEBHOOKS = {
+  observer:  process.env.N8N_OBSERVER_WEBHOOK  || 'http://localhost:5678/webhook/Observer',
+  scribe:    process.env.N8N_SCRIBE_WEBHOOK    || 'http://localhost:5678/webhook/Scribe',
+  shield:    process.env.N8N_SHIELD_WEBHOOK    || 'http://localhost:5678/webhook/Shield',
+  commander: process.env.N8N_COMMANDER_WEBHOOK || 'http://localhost:5678/webhook/Commander',
+};
+
+// Trigger n8n Commander workflow to autonomously execute auto-heal
+// Called non-blocking — Express never waits for Commander to finish
+async function triggerCommander(incidentType, startedAt) {
+  const payload = {
+    type:       incidentType,
+    startedAt:  startedAt || new Date().toISOString(),
+    source:     'express-server',
+    autoHealUrl: `http://localhost:${process.env.PORT || 3000}/auto-heal`,
+  };
+  try {
+    logger.info(`[Commander] Triggering autonomous remediation for [${incidentType}]`, { payload });
+    const res = await fetch(N8N_WEBHOOKS.commander, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+      // Timeout after 4s — if n8n doesn't acknowledge, log and continue
+      signal:  AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      logger.info(`[Commander] n8n acknowledged remediation trigger for [${incidentType}]`);
+    } else {
+      logger.warn(`[Commander] n8n returned HTTP ${res.status} for Commander webhook`);
+    }
+  } catch (err) {
+    // Commander unavailable — log but do NOT block the incident response
+    logger.warn(`[Commander] Webhook unreachable.`, {
+      incidentType,
+      error: err.message,
+    });
+  }
+
+  // FAILSAFE: Automatically heal after 12 seconds if n8n hasn't done it yet
+  // This guarantees the system is self-healing even if n8n is offline or misconfigured.
+  setTimeout(async () => {
+    if (activeIncident.type === incidentType) {
+      logger.info(`[Failsafe] Incident [${incidentType}] still active after 12s. Forcing internal auto-heal...`);
+      try {
+        await fetch(`http://localhost:${process.env.PORT || 3000}/auto-heal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: incidentType })
+        });
+      } catch (e) {
+        logger.error('[Failsafe] Internal auto-heal failed:', e.message);
+      }
+    }
+  }, 12000);
+}
 
 // ---------------------------------------------------------
 // 5. Business Endpoints
@@ -439,8 +534,7 @@ app.post('/simulate-failure', (req, res) => {
   // Generate a burst of error logs (minimum 5 entries)
   generateNoiseLogs(type);
 
-  // Send webhook notification to monitoring controller asynchronously
-  const alertUrl = 'http://localhost:5678/webhook/Observer';
+  // Notify n8n Observer (fire-and-forget — for logging + pre-alert routing)
   const alertPayload = {
     type,
     timestamp: activeIncident.startedAt,
@@ -448,9 +542,18 @@ app.post('/simulate-failure', (req, res) => {
     status: 'firing',
     reporterEmail: activeIncident.reporterEmail
   };
+  sendWebhookNotification(N8N_WEBHOOKS.observer, alertPayload);
 
-  // Trigger non-blocking async webhook
-  sendWebhookNotification(alertUrl, alertPayload);
+  // Trigger n8n Commander for autonomous remediation (non-blocking)
+  triggerCommander(type, activeIncident.startedAt);
+
+  // Broadcast SSE event to all connected frontend clients
+  broadcastSSE('incident-update', {
+    type: activeIncident.type,
+    startedAt: activeIncident.startedAt,
+    status: 'active',
+    severity: supportedTypes.includes(type) ? 'high' : 'medium',
+  });
 
   res.json({
     success: true,
@@ -482,17 +585,23 @@ app.post('/resolve-incident', (req, res) => {
   // Log recovery events to console and file
   logger.info(`Recovery confirmation: All systems operational. Cleared down type: ${prevIncident.type}`);
 
-  // Send webhook notification asynchronously
-  const resolveUrl = 'http://localhost:5678/webhook/Scribe';
+  // Notify n8n Scribe for post-mortem logging (fire-and-forget)
   const resolvePayload = {
     type: prevIncident.type,
     startedAt: prevIncident.startedAt,
     resolvedAt,
-    status: 'resolved'
+    status: 'resolved',
+    resolvedBy: 'manual',
   };
+  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload);
 
-  // Trigger non-blocking async webhook
-  sendWebhookNotification(resolveUrl, resolvePayload);
+  // Broadcast SSE event to all connected frontend clients
+  broadcastSSE('incident-update', {
+    type: null,
+    status: 'resolved',
+    resolvedAt,
+    previousType: prevIncident.type,
+  });
 
   res.json({
     success: true,
@@ -677,17 +786,26 @@ app.post('/auto-heal', (req, res) => {
 
   logger.warn('Auto-remediation successful. Engineers never got paged.');
 
-  // Trigger Scribe post-mortem webhook asynchronously
+  // Notify n8n Scribe for post-mortem logging (fire-and-forget)
   const resolvedAt = new Date().toISOString();
-  const resolveUrl = 'http://localhost:5678/webhook/Scribe';
   const resolvePayload = {
     type: prevIncident.type,
     startedAt: prevIncident.startedAt,
     resolvedAt,
-    status: 'resolved'
+    status: 'auto-healed',
+    resolvedBy: 'commander',
+    commandExecuted: command,
   };
-  
-  sendWebhookNotification(resolveUrl, resolvePayload);
+  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload);
+
+  // Broadcast SSE event — auto-heal resolved the incident
+  broadcastSSE('incident-update', {
+    type: null,
+    status: 'auto-healed',
+    resolvedAt,
+    previousType: prevIncident.type,
+    commandExecuted: command,
+  });
 
   res.json({
     success: true,
@@ -742,12 +860,22 @@ app.post('/api/incident/update', (req, res) => {
     activeIncident.ragContext = null;
     fetchAndCacheRAGContext(type);
     logger.warn(`Incident manually updated/triggered via API to [${type}]`, { activeIncident });
-    
+
     // Generate logs for this failure type if it's one of the simulated types
     if (['payment_down', 'db_down', 'api_timeout'].includes(type)) {
       generateNoiseLogs(type);
     }
+
+    // Trigger n8n Commander for autonomous remediation (non-blocking)
+    triggerCommander(type, activeIncident.startedAt);
   }
+
+  // Broadcast SSE event for any incident update
+  broadcastSSE('incident-update', {
+    type: activeIncident.type,
+    startedAt: activeIncident.startedAt,
+    status: activeIncident.type ? 'active' : 'cleared',
+  });
 
   res.json({
     success: true,
@@ -763,6 +891,13 @@ let preAlert = null;
 app.post('/api/pre-alert', (req, res) => {
   preAlert = { ...req.body, detectedAt: Date.now() };
   logger.warn('PRE-ALERT STATUS: Active', { preAlert });
+
+  // Broadcast SSE pre-alert event to all connected clients
+  broadcastSSE('prealert-update', {
+    active: true,
+    preAlert,
+  });
+
   res.json({ ok: true });
 });
 
@@ -819,7 +954,202 @@ app.post('/dev/stress-cpu', (req, res) => {
 // ─── 4. Recovery handler for the pre-alert banner ───────────────────────────
 app.post('/api/incident/prealert-clear', (req, res) => {
   preAlert = null;
+
+  // Broadcast SSE pre-alert cleared event
+  broadcastSSE('prealert-update', { active: false, preAlert: null });
+
   res.json({ cleared: true });
+});
+
+
+// ---------------------------------------------------------
+// BANKING API ENDPOINTS (frontend-facing, customer-friendly)
+// ---------------------------------------------------------
+
+// Customer-friendly message map for incident types
+const INCIDENT_CUSTOMER_MESSAGES = {
+  payment_down:   'Payment services are temporarily unavailable. Your account has not been charged. Please try again shortly.',
+  db_down:        'We are experiencing a brief technical issue. Your money is safe and no changes have been made to your account.',
+  api_timeout:    'Our systems are responding slowly right now. Please wait a moment and try again.',
+  high_error_rate: 'We are currently experiencing higher than normal traffic. Please try again in a few minutes.',
+  checkout_failure:'Transaction processing is temporarily paused. No charges have been made to your account.',
+  authentication_failure: 'Authentication services are momentarily unavailable. Please try again shortly.',
+  service_degradation: 'Some services are temporarily degraded. Our team is actively working on a fix.',
+  disk_space_critical: 'Our systems are under maintenance. Services will resume shortly.',
+};
+
+// POST /api/banking/transfer — Customer-facing transfer endpoint
+app.post('/api/banking/transfer', async (req, res, next) => {
+  const { amount, fromAccount, toAccount, beneficiaryId, remarks, method } = req.body;
+
+  // Validate amount
+  if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+    logger.warn('Transfer rejected: invalid amount', { amount, requestId: req.id });
+    return res.status(400).json({
+      success: false,
+      customerMessage: 'Please enter a valid transfer amount greater than ₹0.',
+    });
+  }
+
+  const numAmount = Number(amount);
+
+  // Handle active incident — customer-friendly response
+  if (activeIncident.type && ['payment_down', 'db_down', 'api_timeout', 'checkout_failure', 'service_degradation'].includes(activeIncident.type)) {
+    const customerMessage = INCIDENT_CUSTOMER_MESSAGES[activeIncident.type] ||
+      'We are experiencing a temporary issue. Your account has not been charged. Please try again shortly.';
+
+    logger.warn('[Banking API] Transfer blocked due to active incident', {
+      incidentType: activeIncident.type,
+      amount: numAmount,
+      requestId: req.id,
+    });
+
+    // Simulate api_timeout latency before responding
+    if (activeIncident.type === 'api_timeout') {
+      await delay(3000);
+    }
+
+    return res.status(503).json({
+      success: false,
+      incidentActive: true,
+      incidentType: activeIncident.type,
+      customerMessage,
+      etaMinutes: (() => {
+        try {
+          const runbooksPath = path.join(__dirname, 'runbooks.json');
+          if (fs.existsSync(runbooksPath)) {
+            const runbooks = JSON.parse(fs.readFileSync(runbooksPath, 'utf8'));
+            const matched = runbooks.find(r => r.incident_type === activeIncident.type);
+            return matched ? matched.avg_resolution_minutes : 10;
+          }
+        } catch (_) {}
+        return 10;
+      })(),
+    });
+  }
+
+  // Process the transfer via existing payment logic
+  try {
+    const txId = `TXN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
+    runDbQuery(() => {
+      db.prepare('INSERT INTO payments (amount, status, transaction_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(numAmount, 'APPROVED', txId, new Date().toISOString());
+    });
+
+    logger.info('[Banking API] Transfer approved', {
+      transactionId: txId,
+      amount: numAmount,
+      fromAccount,
+      beneficiaryId,
+      method: method || 'IMPS',
+      requestId: req.id,
+    });
+
+    return res.json({
+      success: true,
+      transactionId: txId,
+      amount: numAmount,
+      message: `Transfer of ₹${numAmount.toLocaleString('en-IN')} processed successfully.`,
+      timestamp: new Date().toISOString(),
+      method: method || 'IMPS',
+      status: 'APPROVED',
+    });
+  } catch (error) {
+    // Do NOT surface technical error to customer
+    logger.error('[Banking API] Transfer failed with internal error', {
+      error: error.message,
+      requestId: req.id,
+    });
+    return res.status(503).json({
+      success: false,
+      customerMessage: 'We encountered a temporary issue processing your transfer. Your account has not been debited. Please try again.',
+      incidentActive: false,
+    });
+  }
+});
+
+// GET /api/banking/status — Lightweight service availability check
+app.get('/api/banking/status', (req, res) => {
+  if (activeIncident.type) {
+    const customerMessage = INCIDENT_CUSTOMER_MESSAGES[activeIncident.type] ||
+      'Banking services are temporarily limited. Our team is working on a fix.';
+
+    let etaMinutes = 10;
+    try {
+      const runbooksPath = path.join(__dirname, 'runbooks.json');
+      if (fs.existsSync(runbooksPath)) {
+        const runbooks = JSON.parse(fs.readFileSync(runbooksPath, 'utf8'));
+        const matched = runbooks.find(r => r.incident_type === activeIncident.type);
+        if (matched) etaMinutes = matched.avg_resolution_minutes;
+      }
+    } catch (_) {}
+
+    return res.json({
+      available: false,
+      incident: {
+        type: activeIncident.type,
+        startedAt: activeIncident.startedAt,
+        customerMessage,
+        etaMinutes,
+        recoveryUnderway: true,
+      },
+    });
+  }
+
+  if (preAlert) {
+    return res.json({
+      available: true,
+      preAlert: {
+        message: 'We are monitoring a brief service interruption. Services remain available.',
+        detectedAt: preAlert.detectedAt,
+      },
+      incident: null,
+    });
+  }
+
+  res.json({ available: true, incident: null, preAlert: null });
+});
+
+// GET /api/incidents/stream — Server-Sent Events push channel
+app.get('/api/incidents/stream', (req, res) => {
+  const clientId = ++sseClientCounter;
+
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable Nginx buffering if proxied
+  res.flushHeaders();
+
+  // Register client
+  sseClients.set(clientId, res);
+  logger.info(`[SSE] Client connected: ${clientId} (total: ${sseClients.size})`);
+
+  // Send current state immediately on connect
+  const initialPayload = {
+    type: activeIncident.type,
+    startedAt: activeIncident.startedAt,
+    status: activeIncident.type ? 'active' : 'idle',
+    preAlert: preAlert || null,
+  };
+  res.write(`event: init\ndata: ${JSON.stringify(initialPayload)}\n\n`);
+
+  // Heartbeat every 30s to prevent proxy timeouts
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 30000);
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    sseClients.delete(clientId);
+    logger.info(`[SSE] Client disconnected: ${clientId} (total: ${sseClients.size})`);
+  });
 });
 
 
@@ -846,7 +1176,7 @@ app.post('/api/shield/chat', async (req, res) => {
     }
 
     logger.info('Forwarding Shield Chat message to n8n webhook', { body: req.body });
-    const response = await fetch('http://localhost:5678/webhook/Shield', {
+    const response = await fetch(N8N_WEBHOOKS.shield, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
