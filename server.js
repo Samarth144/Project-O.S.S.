@@ -12,6 +12,27 @@ try {
   createClient = null;
 }
 
+const rlPolicy = require('./server/rl/rl-policy');
+
+const SIMULATOR_PROBS = {
+  db_down: { reset_pool: 0.3, restart_db_conn: 0.5, failover_replica: 0.85, clear_locks: 0.4 },
+  payment_down: { reset_gateway_pool: 0.35, switch_backup_gateway: 0.9, flush_retry_queue: 0.5 },
+  api_timeout: { restart_workers: 0.6, scale_workers: 0.8, shed_load: 0.45 },
+  high_error_rate: { rollback_deploy: 0.9, flush_cache: 0.4, block_ip_range: 0.3 }
+};
+
+function applySimulatedFix(type, action) {
+  // The hidden outcome belongs only to the simulator, never to the policy.
+  const recovered = rlPolicy.rng() <= (SIMULATOR_PROBS[type]?.[action] ?? 0.5);
+  return { type, action, healthy: recovered };
+}
+
+async function verifyRecovery(type, action, mode, simulatedIncident) {
+  if (mode === 'train') return simulatedIncident?.type === type && simulatedIncident.healthy === true;
+  return selfCheck();
+}
+
+
 // ---------------------------------------------------------
 // Supabase — Incident State Persistence
 // Ensures activeIncident survives server restarts.
@@ -707,6 +728,30 @@ async function selfCheck() {
   }
 }
 
+let lastPolicyDecision = null;
+async function tryHeal(type, mode = 'live', { emitSSE = mode === 'live', incident = null } = {}) {
+  const exclude = [];
+  const attempts = [];
+  let healed = false;
+  let action = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    action = rlPolicy.choose(type, { mode, exclude });
+    if (!action) break;
+    const simulatedIncident = mode === 'train' ? applySimulatedFix(type, action) : incident;
+    const success = await verifyRecovery(type, action, mode, simulatedIncident);
+    const reason = success ? 'verified recovery' : 'recovery verification failed';
+    rlPolicy.reward(type, action, success);
+    const result = { type, action, reason, success, attempt };
+    attempts.push(result);
+    lastPolicyDecision = { decision: action, evidence: `Attempt ${attempt} ${success ? 'verified recovery' : 'failed verification'}`, confidence: rlPolicy.getStats()[type]?.actions[action]?.successRate || 0, reason };
+    logger.info('[Auto-Heal Engine]: Remediation attempt', result);
+    if (emitSSE) broadcastSSE('heal_attempt', result);
+    if (success) { healed = true; break; }
+    exclude.push(action);
+  }
+  return { healed, action: healed ? action : null, attempts };
+}
+
 /**
  * resolveActiveIncident:
  * Unified resolution path for both manual engineer actions and automated auto-heal.
@@ -961,11 +1006,29 @@ app.post('/auto-heal', requireToken, async (req, res) => {
     activeIncident.incident_uuid = incomingId;
   }
 
-  activeIncident.healAttempts = (activeIncident.healAttempts || 0) + 1;
-  const isForced = req.query.force === 'true' || req.body?.force === true;
+  const result = await tryHeal(type, 'live');
+  activeIncident.healAttempts = (activeIncident.healAttempts || 0) + result.attempts.length;
 
-  if (activeIncident.healAttempts > 2 && !isForced) {
-    logger.warn(`[Auto-Heal Engine]: Escalation triggered — max heal attempts (${activeIncident.healAttempts}) reached for [${type}]. Escalate to engineer.`);
+  if (result.healed) {
+    const healAttempts = activeIncident.healAttempts;
+    const resolved = await resolveActiveIncident('auto-healed', result.action);
+    if (!resolved) {
+      return res.status(409).json({
+        healed: false,
+        reason: 'resolution already in progress or already cleared'
+      });
+    }
+    logger.warn('Auto-remediation verified and successful. Engineers never got paged.');
+    return res.json({
+      healed: true,
+      success: true,
+      message: 'Auto-remediation command executed and verified. Incident resolved.',
+      commandExecuted: result.action,
+      healAttempts,
+      resolvedAt: resolved.resolvedAt
+    });
+  } else {
+    logger.warn(`[Auto-Heal Engine]: Escalation triggered - max heal attempts reached for [${type}]. Escalate to engineer.`);
     return res.status(409).json({
       healed: false,
       reason: 'max attempts, escalate to engineer',
@@ -973,55 +1036,43 @@ app.post('/auto-heal', requireToken, async (req, res) => {
       incidentType: type
     });
   }
-
-  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger (attempt #${activeIncident.healAttempts}) for [${type}]. Executing recovery script...`);
-
-  // Map known incident types to remediation commands from runbooks
-  let command = 'echo "Executing default recovery verification"';
-  if (type === 'db_down') {
-    command = 'touch /tmp/postgresql.trigger.5432';
-  } else if (type === 'payment_down') {
-    command = 'npm run reset-pool --max=100';
-  } else if (type === 'api_timeout') {
-    command = 'systemctl restart gateway-workers';
-  }
-
-  logger.info(`[Auto-Heal Engine]: Running recovery command: ${command}`);
-
-  // Run live system self-check before declaring healing successful
-  const healthy = await selfCheck();
-  if (!healthy) {
-    logger.error(`[Auto-Heal Engine]: System self-check failed during auto-heal attempt #${activeIncident.healAttempts}`);
-    return res.status(409).json({
-      healed: false,
-      reason: 'self-check failed',
-      healAttempts: activeIncident.healAttempts
-    });
-  }
-
-  // Resolve through the single verified resolve path
-  const result = await resolveActiveIncident('auto-healed', command);
-  if (!result) {
-    return res.status(409).json({
-      healed: false,
-      reason: 'resolution already in progress or already cleared'
-    });
-  }
-
-  logger.warn('Auto-remediation verified and successful. Engineers never got paged.');
-
-  res.json({
-    healed: true,
-    success: true,
-    message: 'Auto-remediation command executed and verified. Incident resolved.',
-    commandExecuted: command,
-    healAttempts: activeIncident.healAttempts,
-    resolvedAt: result.resolvedAt
-  });
 });
 
 
+// ---------------------------------------------------------
+// Self-Learning Remediation Policy API
+// ---------------------------------------------------------
+app.get('/api/policy', requireToken, (req, res) => {
+  res.json({ stats: rlPolicy.getStats(), lastDecision: lastPolicyDecision });
+});
 
+app.get('/api/policy/recommendation', requireToken, (req, res) => {
+  const { type } = req.query;
+  if (!rlPolicy.actions[type]) return res.status(400).json({ error: 'unsupported type' });
+  const action = rlPolicy.choose(type, { mode: 'live' });
+  res.json({ type, recommendation: action });
+});
+
+app.post('/api/policy/train', requireToken, async (req, res) => {
+  const { type, episodes = 50, seed = 1337 } = req.body || {};
+  if (!type) return res.status(400).json({ error: 'type required' });
+  if (!rlPolicy.actions[type]) return res.status(400).json({ error: 'unsupported type' });
+  const count = Math.max(1, Math.min(500, Number.parseInt(episodes, 10) || 50));
+  rlPolicy.setSeed(seed);
+  const curve = [];
+  for (let i = 0; i < count; i++) {
+    // Each episode owns a simulated incident and emits no customer-facing events.
+    const outcome = await tryHeal(type, 'train', { emitSSE: false, incident: { type, simulated: true } });
+    const attempts = outcome.healed ? outcome.attempts.length : 3;
+    curve.push({ episode: i + 1, attempts, healed: outcome.healed });
+  }
+  res.json({ curve, stats: rlPolicy.getStats()[type], lastDecision: lastPolicyDecision });
+});
+
+app.post('/api/policy/reset', requireToken, (req, res) => {
+  rlPolicy.reset();
+  res.json({ success: true, stats: rlPolicy.getStats() });
+});
 
 // POST /api/incident/update - Update active incident manually
 app.post('/api/incident/update', (req, res) => {

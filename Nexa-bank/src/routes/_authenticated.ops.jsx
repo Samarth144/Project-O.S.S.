@@ -14,8 +14,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { useEffect, useState, useRef } from "react";
-import { Activity, Cpu, Database, Wifi, AlertTriangle, CheckCircle2, RefreshCw, Server, Zap, Users, Clock, FileText, Radio, } from "lucide-react";
-import { getMetrics, resolveIncident } from "@/lib/api";
+import { Activity, Cpu, Database, Wifi, AlertTriangle, CheckCircle2, RefreshCw, Server, Zap, Users, Clock, FileText, Radio, BrainCircuit, RotateCcw, } from "lucide-react";
+import { ResponsiveContainer, LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip } from "recharts";
+import { getMetrics, resolveIncident, getPolicy, trainPolicy, resetPolicy } from "@/lib/api";
 import { useIncidentBus } from "@/hooks/useIncidentBus";
 export const Route = createFileRoute("/_authenticated/ops")({
     head: () => ({
@@ -99,6 +100,12 @@ function OpsPage() {
     const [actionRunning, setActionRunning] = useState(null);
     const [escalated, setEscalated] = useState(false);
     const [escalationReason, setEscalationReason] = useState("");
+    const [policyType, setPolicyType] = useState("db_down");
+    const [episodes, setEpisodes] = useState(50);
+    const [policyData, setPolicyData] = useState(null);
+    const [policyCurve, setPolicyCurve] = useState([]);
+    const [policyBusy, setPolicyBusy] = useState(false);
+    const [policyMessage, setPolicyMessage] = useState("");
     const timerRef = useRef(null);
     const isIncidentActive = incident !== null;
     const refreshMetrics = async () => {
@@ -124,6 +131,28 @@ function OpsPage() {
                 clearInterval(timerRef.current);
         };
     }, []);
+    useEffect(() => { getPolicy().then(setPolicyData).catch(() => {}); }, []);
+    const handleTrainPolicy = async () => {
+        setPolicyBusy(true);
+        setPolicyMessage("");
+        try {
+            const result = await trainPolicy(policyType, episodes);
+            setPolicyCurve(result.curve || []);
+            setPolicyData(await getPolicy());
+            setPolicyMessage("Training complete in simulated environment.");
+        } catch (err) { setPolicyMessage(err?.message || "Training failed."); }
+        finally { setPolicyBusy(false); }
+    };
+    const handleResetPolicy = async () => {
+        setPolicyBusy(true);
+        try {
+            const result = await resetPolicy();
+            setPolicyData({ stats: result.stats, lastDecision: null });
+            setPolicyCurve([]);
+            setPolicyMessage("Policy statistics reset.");
+        } catch (err) { setPolicyMessage(err?.message || "Reset failed."); }
+        finally { setPolicyBusy(false); }
+    };
     const handleSimulate = async () => {
         if (actionRunning || isIncidentActive)
             return;
@@ -266,6 +295,47 @@ function OpsPage() {
           </div>
         )}
       </div>
+
+      <section className="rounded-3xl glass-strong p-6 space-y-5 border border-primary/20">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold"><BrainCircuit className="h-4 w-4 text-primary"/>Self-Learning Remediation</div>
+            <p className="mt-1 text-xs text-muted-foreground">Training runs only in a simulated environment.</p>
+          </div>
+          <span className="rounded-full bg-primary/10 px-3 py-1 text-xs text-primary">simulated environment</span>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid gap-1 text-xs text-muted-foreground">Failure type
+            <select value={policyType} onChange={e => setPolicyType(e.target.value)} disabled={policyBusy} className="rounded-xl bg-slate-900/90 border border-white/10 px-3 py-2 text-sm text-foreground">
+              <option value="db_down">Database down</option><option value="payment_down">Payment down</option><option value="api_timeout">API timeout</option><option value="high_error_rate">High error rate</option>
+            </select>
+          </label>
+          <label className="grid gap-1 text-xs text-muted-foreground">Episodes
+            <input type="number" min="1" max="500" value={episodes} onChange={e => setEpisodes(Math.max(1, Math.min(500, Number(e.target.value) || 1)))} className="w-28 rounded-xl bg-slate-900/90 border border-white/10 px-3 py-2 text-sm text-foreground" />
+          </label>
+          <button onClick={handleTrainPolicy} disabled={policyBusy} className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50">{policyBusy ? "Training..." : "Train"}</button>
+          <button onClick={handleResetPolicy} disabled={policyBusy} className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm disabled:opacity-50"><RotateCcw className="h-4 w-4"/>Reset</button>
+          {policyMessage && <span className="text-xs text-muted-foreground">{policyMessage}</span>}
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="rounded-2xl border border-white/5 p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">Attempts per episode</div>
+            <div className="h-52">
+              <ResponsiveContainer width="100%" height="100%"><LineChart data={policyCurve}><CartesianGrid strokeDasharray="3 3" stroke="#ffffff18"/><XAxis dataKey="episode" tick={{ fontSize: 10 }}/><YAxis domain={[0, 3]} allowDecimals={false} tick={{ fontSize: 10 }}/><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}/><Line type="monotone" dataKey="attempts" stroke="#60a5fa" dot={false}/></LineChart></ResponsiveContainer>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/5 p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">Success rate per fix (pull count)</div>
+            <div className="h-52">
+              <ResponsiveContainer width="100%" height="100%"><BarChart data={Object.entries(policyData?.stats?.[policyType]?.actions || {}).map(([action, stats]) => ({ action, rate: Math.round(stats.successRate * 100), pulls: stats.pulls }))}><CartesianGrid strokeDasharray="3 3" stroke="#ffffff18"/><XAxis dataKey="action" tick={{ fontSize: 9 }} interval={0} angle={-15} textAnchor="end" height={50}/><YAxis domain={[0, 100]} tick={{ fontSize: 10 }}/><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} formatter={(value, name, item) => name === "rate" ? [`${value}% · ${item.payload.pulls} pulls`, "Success"] : [value, name]}/><Bar dataKey="rate" fill="#34d399" radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 text-sm">
+          <div className="mb-1 text-xs text-muted-foreground">Last decision</div>
+          {policyData?.lastDecision ? <div><span className="font-mono text-primary">{policyData.lastDecision.decision}</span><span className="ml-2 text-xs text-muted-foreground">{policyData.lastDecision.reason} · confidence {(policyData.lastDecision.confidence * 100).toFixed(0)}%</span><div className="mt-1 text-xs text-muted-foreground">{policyData.lastDecision.evidence}</div></div> : <span className="text-xs text-muted-foreground">No policy decision recorded yet.</span>}
+        </div>
+      </section>
 
       {/* Live Telemetry */}
       <div>
