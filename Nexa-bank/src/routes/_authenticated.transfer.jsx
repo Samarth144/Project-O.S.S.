@@ -144,115 +144,149 @@ function TransferPage() {
         setSuccessData(null);
         setTransferError(null);
     };
-    return (<div className="space-y-6 max-w-3xl mx-auto">
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-        <div className="text-sm text-muted-foreground">Payments</div>
-        <h1 className="text-3xl font-semibold tracking-tight mt-1">Transfer money</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Send funds instantly via IMPS, NEFT or RTGS.</p>
+    return (<div className="w-full min-w-0 space-y-7">
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="text-[11px] font-medium tracking-[0.16em] text-[#b8f36b]">PAYMENTS</div>
+          <h1 className="mt-2 text-3xl font-medium tracking-[-0.05em] sm:text-4xl">Transfer money</h1>
+          <p className="mt-2 text-sm text-white/45">Send funds instantly via IMPS, NEFT or RTGS.</p>
+        </div>
+        <div className="hidden items-center gap-2 rounded-full border border-[#b8f36b]/15 bg-[#b8f36b]/[0.05] px-3.5 py-2 text-xs text-[#c4f889] sm:flex">
+          <ShieldCheck className="h-4 w-4" /> Secure transfer
+        </div>
       </motion.div>
 
-      <motion.form initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} onSubmit={submit} className="rounded-3xl glass-strong p-6 sm:p-8 space-y-5 relative">
-        {/* Customer Account Switcher (allows demoing multiple affected users) */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-              <User className="h-3.5 w-3.5 text-primary" /> Transferring As Customer
+      <motion.form initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} onSubmit={submit} className="grid w-full min-w-0 grid-cols-1 items-start gap-5 xl:grid-cols-2 xl:gap-6">
+        {/* Customer Account Switcher */}
+        <section className="rounded-[24px] border border-white/[0.08] bg-[#11171d]/90 p-5 sm:p-6 xl:col-span-2" aria-labelledby="customer-switcher-title">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <label id="customer-switcher-title" className="flex items-center gap-2 text-sm font-medium text-white/85">
+              <User className="h-4 w-4 text-[#b8f36b]" /> Transferring as customer
             </label>
-            <span className="text-[10px] text-primary/80 font-mono">Select user to test affected count</span>
+            <span className="text-[11px] text-white/40">Select a customer to test affected count</span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
             {[
               { name: "Pranav Jadhav", email: "pranavjadhav1319@gmail.com" },
               { name: "Aarav Sharma", email: "aarav.sharma@nexabank.com" },
               { name: "Priya Patel", email: "priya.patel@example.com" },
               { name: "Vikram Malhotra", email: "vikram.malhotra@corp.in" },
-            ].map((u) => {
-              const active = senderEmail === u.email;
+            ].map((customer) => {
+              const active = senderEmail === customer.email;
               return (
                 <button
-                  key={u.email}
+                  key={customer.email}
                   type="button"
-                  onClick={() => setSenderEmail(u.email)}
-                  className={`text-left rounded-xl p-2.5 border transition ${
-                    active
-                      ? "border-primary/60 bg-primary/15 text-white shadow-sm"
-                      : "border-white/10 glass hover:bg-white/5 text-muted-foreground"
+                  onClick={() => setSenderEmail(customer.email)}
+                  className={`min-w-0 rounded-xl border p-3 text-left transition ${active
+                    ? "border-[#b8f36b]/45 bg-[#b8f36b]/[0.07] text-white"
+                    : "border-white/[0.07] bg-white/[0.02] text-white/65 hover:border-white/15 hover:bg-white/[0.04]"
                   }`}
                 >
-                  <div className="text-xs font-semibold truncate text-foreground">{u.name}</div>
-                  <div className="text-[10px] text-muted-foreground truncate font-mono">{u.email}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium">{customer.name}</span>
+                    {active && <span className="h-2 w-2 shrink-0 rounded-full bg-[#b8f36b]" />}
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-white/40">{customer.email}</div>
                 </button>
               );
             })}
           </div>
-        </div>
+        </section>
 
-        {/* From account */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground">From account</label>
-          <div className="mt-2 grid grid-cols-2 gap-3">
-            {["savings", "current"].map((k) => {
-            const a = k === "savings" ? accounts.savings : accounts.current;
-            const active = fromAcct === k;
-            return (<button key={k} type="button" onClick={() => setFromAcct(k)} className={`text-left rounded-2xl border p-4 transition ${active ? "border-primary/50 bg-primary/10" : "border-white/10 glass hover:bg-white/5"}`}>
-                  <div className="text-xs text-muted-foreground capitalize">{k} account</div>
-                  <div className="text-xs mt-0.5 font-mono">{a.number}</div>
-                  <div className="mt-2 text-sm font-semibold text-gradient-primary">{formatINR(a.balance)}</div>
-                </button>);
-        })}
+        <section className="space-y-6 rounded-[24px] border border-white/[0.08] bg-[#11171d]/90 p-5 sm:p-7" aria-label="Recipient and source account">
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-white/90">1. Choose an account</h2>
+              <Wallet className="h-4 w-4 text-white/35" />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {["savings", "current"].map((key) => {
+                const selectedAccount = key === "savings" ? accounts.savings : accounts.current;
+                const active = fromAcct === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setFromAcct(key)}
+                    aria-pressed={active}
+                    className={`relative overflow-hidden rounded-2xl border p-4 text-left transition ${active
+                      ? "border-[#b8f36b]/40 bg-[#b8f36b]/[0.06]"
+                      : "border-white/[0.08] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    {active && <span className="absolute right-4 top-4 h-2 w-2 rounded-full bg-[#b8f36b]" />}
+                    <div className="text-xs capitalize text-white/50">{key} account</div>
+                    <div className="mt-1 text-xs text-white/40">{selectedAccount.number}</div>
+                    <div className="mt-4 text-lg font-medium tracking-tight text-[#c4f889]">{formatINR(selectedAccount.balance)}</div>
+                    <div className="mt-1 text-[10px] text-white/35">Available balance</div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
 
-        {/* Beneficiary */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground">Beneficiary</label>
-          <div className="mt-2 relative">
-            <select value={beneficiary} onChange={(e) => onBeneficiaryChange(e.target.value)} className="w-full h-11 rounded-xl bg-white/5 border border-white/10 px-3 pr-10 text-sm outline-none focus:border-primary/60 appearance-none">
-              {beneficiaries.map((b) => (<option key={b.id} value={b.id} className="bg-[oklch(0.2_0.03_265)]">
-                  {b.name} — {b.bank} ({b.account})
-                </option>))}
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none"/>
+          <div className="border-t border-white/[0.07] pt-5">
+            <h2 className="text-sm font-semibold text-white/90">2. Choose a beneficiary</h2>
+            <div className="relative mt-3">
+              <select value={beneficiary} onChange={(e) => onBeneficiaryChange(e.target.value)} className="h-12 w-full appearance-none rounded-xl border border-white/[0.09] bg-white/[0.025] px-3 pr-10 text-sm text-white outline-none transition focus:border-[#b8f36b]/50 focus:ring-2 focus:ring-[#b8f36b]/10">
+                {beneficiaries.map((item) => (
+                  <option key={item.id} value={item.id} className="bg-[#11171d] text-white">
+                    {item.name} — {item.bank} ({item.account})
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
+            </div>
           </div>
-        </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Account number" value={account} onChange={setAccount} placeholder="1234 5678 9012"/>
-          <Field label="IFSC code" value={ifsc} onChange={setIfsc} placeholder="ABCD0001234"/>
-        </div>
-
-        <div>
-          <label className="text-xs font-medium text-muted-foreground">Amount</label>
-          <div className="mt-2 relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg text-muted-foreground">₹</span>
-            <input type="text" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ""))} className="w-full h-14 rounded-xl bg-white/5 border border-white/10 pl-9 pr-3 text-2xl font-semibold outline-none focus:border-primary/60"/>
+          <div className="grid gap-4 border-t border-white/[0.07] pt-5 sm:grid-cols-2">
+            <Field label="Account number" value={account} onChange={setAccount} placeholder="1234 5678 9012" />
+            <Field label="IFSC code" value={ifsc} onChange={setIfsc} placeholder="ABCD0001234" />
           </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {[1000, 5000, 10000, 15000].map((v) => (<button key={v} type="button" onClick={() => setAmount((prev) => String((Number(prev) || 0) + v))} className="rounded-full px-3 py-1 text-xs glass hover:bg-white/10 transition-colors">
-                +{formatINR(v)}
-              </button>))}
-            <button type="button" onClick={() => setAmount("0")} className="rounded-full px-3 py-1 text-xs text-muted-foreground glass hover:bg-white/10 transition-colors">
-              Clear
+        </section>
+
+        <section className="flex h-full flex-col rounded-[24px] border border-white/[0.08] bg-[#11171d]/90 p-5 sm:p-7" aria-label="Transfer amount and confirmation">
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-white/90">3. Enter an amount</h2>
+                <p className="mt-1 text-xs text-white/40">Available in {fromAcct}: {formatINR(src.balance)}</p>
+              </div>
+              <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-3 py-1.5 text-[10px] font-medium text-white/50">{selectedBeneficiary?.type || "IMPS"}</span>
+            </div>
+            <div className="relative mt-5">
+              <span className="absolute left-5 top-1/2 -translate-y-1/2 text-2xl text-white/35">₹</span>
+              <input type="text" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ""))} aria-label="Transfer amount in rupees" className="h-20 w-full rounded-2xl border border-white/[0.09] bg-white/[0.025] pl-12 pr-4 text-3xl font-medium tracking-tight text-white outline-none transition placeholder:text-white/25 focus:border-[#b8f36b]/50 focus:ring-2 focus:ring-[#b8f36b]/10" />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {[1000, 5000, 10000, 15000].map((value) => (
+                <button key={value} type="button" onClick={() => setAmount((previous) => String((Number(previous) || 0) + value))} className="rounded-full border border-white/[0.08] bg-white/[0.025] px-3.5 py-2 text-xs text-white/65 transition hover:border-[#b8f36b]/30 hover:text-[#c4f889]">
+                  +{formatINR(value)}
+                </button>
+              ))}
+              <button type="button" onClick={() => setAmount("0")} className="rounded-full px-3.5 py-2 text-xs text-white/40 transition hover:bg-white/[0.04] hover:text-white/70">Clear</button>
+            </div>
+          </div>
+
+          <div className="mt-7 border-t border-white/[0.07] pt-5">
+            <Field label="Remarks (optional)" value={remarks} onChange={setRemarks} placeholder="e.g. Rent, gift, invoice #421" />
+          </div>
+
+          <div className="mt-auto pt-6">
+            <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#b8f36b]/10 bg-[#b8f36b]/[0.035] p-3.5 text-xs leading-5 text-white/50">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#b8f36b]" />
+              Transfers are protected by 256-bit encryption and multi-factor verification.
+            </div>
+            <button type="submit" disabled={state === "processing"} className="inline-flex h-14 w-full items-center justify-center gap-2.5 rounded-xl bg-[#b8f36b] px-4 text-sm font-semibold text-[#14200d] shadow-[0_8px_30px_-12px_rgba(184,243,107,0.65)] transition hover:bg-[#c9ff83] disabled:opacity-70">
+              {state === "processing" ? (
+                <><span className="h-4 w-4 animate-spin rounded-full border-2 border-[#14200d]/30 border-t-[#14200d]" /> Processing transfer...</>
+              ) : (
+                <><ArrowLeftRight className="h-4 w-4" /> Transfer {amount && Number(amount) > 0 ? formatINR(Number(amount)) : ""}</>
+              )}
             </button>
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">Available balance in {fromAcct}: <span className="text-foreground font-semibold">{formatINR(src.balance)}</span></div>
-        </div>
-
-        <Field label="Remarks (optional)" value={remarks} onChange={setRemarks} placeholder="e.g. Rent, gift, invoice #421"/>
-
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ShieldCheck className="h-4 w-4 text-primary"/>
-          Transfers are protected by 256-bit encryption & multi-factor verification.
-        </div>
-
-        <button type="submit" disabled={state === "processing"} className="w-full h-12 rounded-xl bg-[image:var(--gradient-primary)] text-primary-foreground font-medium shadow-[var(--shadow-glow)] hover:brightness-110 transition disabled:opacity-70 inline-flex items-center justify-center gap-2">
-          {state === "processing" ? (<>
-              <span className="h-4 w-4 rounded-full border-2 border-primary-foreground/40 border-t-primary-foreground animate-spin"/>
-              Processing transfer...
-            </>) : (<>
-              <ArrowLeftRight className="h-4 w-4"/> Transfer {amount && Number(amount) > 0 ? formatINR(Number(amount)) : ""}
-            </>)}
-        </button>
+        </section>
       </motion.form>
 
       <AnimatePresence>
@@ -507,7 +541,7 @@ function TransferPage() {
 }
 function Field({ label, value, onChange, placeholder }) {
     return (<div>
-      <label className="text-xs font-medium text-muted-foreground">{label}</label>
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-2 w-full h-11 rounded-xl bg-white/5 border border-white/10 px-3 text-sm outline-none focus:border-primary/60"/>
+      <label className="text-xs font-medium text-white/55">{label}</label>
+      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-2 h-11 w-full rounded-xl border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-[#b8f36b]/50 focus:ring-2 focus:ring-[#b8f36b]/10"/>
     </div>);
 }
