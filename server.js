@@ -4,7 +4,12 @@ const winston = require('winston');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
+let createClient;
+try {
+  createClient = require('@supabase/supabase-js').createClient;
+} catch (_) {
+  createClient = null;
+}
 
 // ---------------------------------------------------------
 // Supabase — Incident State Persistence
@@ -13,12 +18,12 @@ const { createClient } = require('@supabase/supabase-js');
 // ---------------------------------------------------------
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
-const supabase = (SUPABASE_URL && SUPABASE_KEY)
+const supabase = (createClient && SUPABASE_URL && SUPABASE_KEY)
   ? createClient(SUPABASE_URL, SUPABASE_KEY)
   : null;
 
 if (!supabase) {
-  console.warn('[Supabase] SUPABASE_URL / SUPABASE_KEY not set — incident persistence disabled. Set them to enable crash-safe state.');
+  console.warn('[Supabase] SUPABASE_URL / SUPABASE_KEY not set or @supabase/supabase-js unavailable — incident persistence disabled.');
 }
 
 /**
