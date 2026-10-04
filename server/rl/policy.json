@@ -1,25 +1,25 @@
 {
   "db_down": {
-    "totalPulls": 0,
+    "totalPulls": 59,
     "actions": {
       "reset_pool": {
-        "pulls": 0,
-        "totalReward": 0,
-        "successes": 0
+        "pulls": 7,
+        "totalReward": 2.86,
+        "successes": 3
       },
       "restart_db_conn": {
-        "pulls": 0,
-        "totalReward": 0,
-        "successes": 0
+        "pulls": 14,
+        "totalReward": 8.720000000000002,
+        "successes": 9
       },
       "failover_replica": {
-        "pulls": 0,
-        "totalReward": 0,
-        "successes": 0
+        "pulls": 36,
+        "totalReward": 28.600000000000016,
+        "successes": 34
       },
       "clear_locks": {
-        "pulls": 0,
-        "totalReward": 0,
+        "pulls": 2,
+        "totalReward": -0.04,
         "successes": 0
       }
     }
@@ -83,5 +83,259 @@
         "successes": 0
       }
     }
+  },
+  "trainingCurves": {
+    "db_down": [
+      {
+        "episode": 1,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 2,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 3,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 4,
+        "attempts": 3,
+        "healed": false
+      },
+      {
+        "episode": 5,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 6,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 7,
+        "attempts": 2,
+        "healed": true
+      },
+      {
+        "episode": 8,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 9,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 10,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 11,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 12,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 13,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 14,
+        "attempts": 3,
+        "healed": false
+      },
+      {
+        "episode": 15,
+        "attempts": 3,
+        "healed": false
+      },
+      {
+        "episode": 16,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 17,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 18,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 19,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 20,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 21,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 22,
+        "attempts": 2,
+        "healed": true
+      },
+      {
+        "episode": 23,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 24,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 25,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 26,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 27,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 28,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 29,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 30,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 31,
+        "attempts": 2,
+        "healed": true
+      },
+      {
+        "episode": 32,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 33,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 34,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 35,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 36,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 37,
+        "attempts": 2,
+        "healed": true
+      },
+      {
+        "episode": 38,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 39,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 40,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 41,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 42,
+        "attempts": 3,
+        "healed": false
+      },
+      {
+        "episode": 43,
+        "attempts": 2,
+        "healed": true
+      },
+      {
+        "episode": 44,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 45,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 46,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 47,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 48,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 49,
+        "attempts": 1,
+        "healed": true
+      },
+      {
+        "episode": 50,
+        "attempts": 1,
+        "healed": true
+      }
+    ]
   }
 }

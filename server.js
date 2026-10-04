@@ -1092,7 +1092,7 @@ app.post('/auto-heal', requireToken, async (req, res) => {
 // Self-Learning Remediation Policy API
 // ---------------------------------------------------------
 app.get('/api/policy', requireToken, (req, res) => {
-  res.json({ stats: rlPolicy.getStats(), lastDecision: lastPolicyDecision });
+  res.json({ stats: rlPolicy.getStats(), trainingCurves: rlPolicy.getTrainingCurves(), lastDecision: lastPolicyDecision });
 });
 
 app.get('/api/policy/recommendation', requireToken, (req, res) => {
@@ -1115,6 +1115,7 @@ app.post('/api/policy/train', requireToken, async (req, res) => {
     const attempts = outcome.healed ? outcome.attempts.length : 3;
     curve.push({ episode: i + 1, attempts, healed: outcome.healed });
   }
+  rlPolicy.setTrainingCurve(type, curve);
   res.json({ curve, stats: rlPolicy.getStats()[type], lastDecision: lastPolicyDecision });
 });
 

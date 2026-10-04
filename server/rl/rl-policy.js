@@ -23,10 +23,14 @@ function emptyPolicy() {
   }]));
 }
 let policy = emptyPolicy();
-function savePolicy() { fs.writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2)); }
+let trainingCurves = {};
+function savePolicy() { fs.writeFileSync(POLICY_FILE, JSON.stringify({ ...policy, trainingCurves }, null, 2)); }
 function loadPolicy() {
   try {
     const stored = JSON.parse(fs.readFileSync(POLICY_FILE, 'utf8'));
+    trainingCurves = stored.trainingCurves && typeof stored.trainingCurves === 'object'
+      ? Object.fromEntries(Object.entries(stored.trainingCurves).filter(([type, curve]) => DEFAULT_ACTIONS[type] && Array.isArray(curve)).map(([type, curve]) => [type, curve]))
+      : {};
     for (const [type, actions] of Object.entries(DEFAULT_ACTIONS)) {
       if (!stored[type]) continue;
       policy[type].totalPulls = Number(stored[type].totalPulls) || 0;
@@ -41,7 +45,17 @@ function loadPolicy() {
     }
   } catch (_) { savePolicy(); }
 }
-function reset() { policy = emptyPolicy(); savePolicy(); }
+function reset() { policy = emptyPolicy(); trainingCurves = {}; savePolicy(); }
+function setTrainingCurve(type, curve) {
+  if (!DEFAULT_ACTIONS[type] || !Array.isArray(curve)) return;
+  trainingCurves[type] = curve.map(({ episode, attempts, healed }) => ({
+    episode: Number(episode),
+    attempts: Number(attempts),
+    healed: Boolean(healed),
+  }));
+  savePolicy();
+}
+function getTrainingCurves() { return Object.fromEntries(Object.entries(trainingCurves).map(([type, curve]) => [type, curve.map(point => ({ ...point }))])); }
 
 function mulberry32(a) {
   return function() {
@@ -105,4 +119,4 @@ function getStats() {
 }
 
 loadPolicy();
-module.exports = { choose, reward, getStats, reset, setSeed, rng: () => rng(), actions: DEFAULT_ACTIONS, defaultOrder: DEFAULT_ORDER };
+module.exports = { choose, reward, getStats, getTrainingCurves, setTrainingCurve, reset, setSeed, rng: () => rng(), actions: DEFAULT_ACTIONS, defaultOrder: DEFAULT_ORDER };

@@ -28,6 +28,12 @@ export const Route = createFileRoute("/_authenticated/ops")({
     component: OpsPage,
 });
 const REFRESH_MS = 8000;
+const TRAINING_MESSAGES = [
+    "Preparing the isolated recovery simulation…",
+    "Running the selected failure scenario across episodes…",
+    "Comparing recovery strategies and verification outcomes…",
+    "Updating the remediation policy metrics…",
+];
 function cpuStatus(v) {
     if (v >= 90)
         return "critical";
@@ -105,6 +111,8 @@ function OpsPage() {
     const [policyData, setPolicyData] = useState(null);
     const [policyCurve, setPolicyCurve] = useState([]);
     const [policyBusy, setPolicyBusy] = useState(false);
+    const [policyTask, setPolicyTask] = useState(null);
+    const [trainingMessageIndex, setTrainingMessageIndex] = useState(0);
     const [policyMessage, setPolicyMessage] = useState("");
     const timerRef = useRef(null);
     const isIncidentActive = incident !== null;
@@ -133,26 +141,41 @@ function OpsPage() {
         };
     }, [isIncidentActive]);
     useEffect(() => { getPolicy().then(setPolicyData).catch(() => {}); }, []);
+    useEffect(() => { setPolicyCurve(policyData?.trainingCurves?.[policyType] ?? []); }, [policyData, policyType]);
+    useEffect(() => {
+        if (policyTask !== "train") return;
+        const interval = setInterval(() => setTrainingMessageIndex((index) => (index + 1) % TRAINING_MESSAGES.length), 3000);
+        return () => clearInterval(interval);
+    }, [policyTask]);
     const handleTrainPolicy = async () => {
+        const startedAt = Date.now();
         setPolicyBusy(true);
+        setPolicyTask("train");
+        setTrainingMessageIndex(0);
         setPolicyMessage("");
         try {
             const result = await trainPolicy(policyType, episodes);
             setPolicyCurve(result.curve || []);
             setPolicyData(await getPolicy());
-            setPolicyMessage("Training complete in simulated environment.");
-        } catch (err) { setPolicyMessage(err?.message || "Training failed."); }
-        finally { setPolicyBusy(false); }
+            setPolicyMessage(`Training complete · ${result.curve?.length ?? episodes} episodes simulated.`);
+        } catch (err) { setPolicyMessage(`Training failed: ${err?.message || "Please try again."}`); }
+        finally {
+            const remaining = Math.max(0, 15000 - (Date.now() - startedAt));
+            if (remaining) await new Promise((resolve) => setTimeout(resolve, remaining));
+            setPolicyBusy(false);
+            setPolicyTask(null);
+        }
     };
     const handleResetPolicy = async () => {
         setPolicyBusy(true);
+        setPolicyTask("reset");
         try {
             const result = await resetPolicy();
             setPolicyData({ stats: result.stats, lastDecision: null });
             setPolicyCurve([]);
             setPolicyMessage("Policy statistics reset.");
         } catch (err) { setPolicyMessage(err?.message || "Reset failed."); }
-        finally { setPolicyBusy(false); }
+        finally { setPolicyBusy(false); setPolicyTask(null); }
     };
     const handleSimulate = async () => {
         if (actionRunning || isIncidentActive)
@@ -342,44 +365,75 @@ function OpsPage() {
         )}
       </div>
 
-      <section className="rounded-3xl glass-strong p-6 space-y-5 border border-primary/20">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><BrainCircuit className="h-4 w-4 text-primary"/>Self-Learning Remediation</div>
-            <p className="mt-1 text-xs text-muted-foreground">Training runs only in a simulated environment.</p>
+      <section className="overflow-hidden rounded-[26px] border border-[#b8f36b]/15 bg-gradient-to-br from-[#141b20] via-[#11171d] to-[#0e1419] shadow-[0_24px_80px_-55px_rgba(184,243,107,0.35)]">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.07] px-5 py-5 sm:px-7 sm:py-6">
+          <div className="flex items-start gap-3.5">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-[#b8f36b]/15 bg-[#b8f36b]/[0.08] text-[#b8f36b]"><BrainCircuit className="h-5 w-5"/></div>
+            <div>
+            <h2 className="text-base font-semibold tracking-tight text-white/90">Self-Learning Remediation</h2>
+            <p className="mt-1 text-xs text-white/45">Train recovery strategies against isolated incident simulations.</p>
+            </div>
           </div>
-          <span className="rounded-full bg-primary/10 px-3 py-1 text-xs text-primary">simulated environment</span>
+          <span className="inline-flex items-center gap-2 rounded-full border border-[#b8f36b]/15 bg-[#b8f36b]/[0.06] px-3 py-1.5 text-[10px] font-medium tracking-wide text-[#c4f889]"><span className="h-1.5 w-1.5 rounded-full bg-[#b8f36b]"/> SIMULATED ENVIRONMENT</span>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="grid gap-1 text-xs text-muted-foreground">Failure type
-            <select value={policyType} onChange={e => setPolicyType(e.target.value)} disabled={policyBusy} className="rounded-xl bg-slate-900/90 border border-white/10 px-3 py-2 text-sm text-foreground">
+        <div className="grid gap-5 px-5 py-5 sm:px-7 sm:py-6 xl:grid-cols-[minmax(0,1fr)_minmax(180px,0.32fr)] xl:items-end">
+        <div className="grid gap-3 sm:grid-cols-[minmax(220px,1fr)_140px_auto_auto] sm:items-end">
+          <label className="grid gap-2 text-xs font-medium text-white/50">Failure type
+            <select value={policyType} onChange={e => setPolicyType(e.target.value)} disabled={policyBusy} className="h-11 w-full rounded-xl border border-white/[0.09] bg-[#0b0f14] px-3 text-sm text-white/85 outline-none transition focus:border-[#b8f36b]/40 disabled:opacity-50">
               <option value="db_down">Database down</option><option value="payment_down">Payment down</option><option value="api_timeout">API timeout</option><option value="high_error_rate">High error rate</option>
             </select>
           </label>
-          <label className="grid gap-1 text-xs text-muted-foreground">Episodes
-            <input type="number" min="1" max="500" value={episodes} onChange={e => setEpisodes(Math.max(1, Math.min(500, Number(e.target.value) || 1)))} className="w-28 rounded-xl bg-slate-900/90 border border-white/10 px-3 py-2 text-sm text-foreground" />
+          <label className="grid gap-2 text-xs font-medium text-white/50">Episodes
+            <input type="number" min="1" max="500" value={episodes} disabled={policyBusy} onChange={e => setEpisodes(Math.max(1, Math.min(500, Number(e.target.value) || 1)))} className="h-11 w-full rounded-xl border border-white/[0.09] bg-[#0b0f14] px-3 text-sm text-white/85 outline-none transition focus:border-[#b8f36b]/40 disabled:opacity-50" />
           </label>
-          <button onClick={handleTrainPolicy} disabled={policyBusy} className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50">{policyBusy ? "Training..." : "Train"}</button>
-          <button onClick={handleResetPolicy} disabled={policyBusy} className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm disabled:opacity-50"><RotateCcw className="h-4 w-4"/>Reset</button>
-          {policyMessage && <span className="text-xs text-muted-foreground">{policyMessage}</span>}
+          <button onClick={handleTrainPolicy} disabled={policyBusy} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#b8f36b] px-5 text-sm font-semibold text-[#14200d] transition hover:bg-[#c9ff83] disabled:cursor-wait disabled:opacity-50">{policyTask === "train" && <RefreshCw className="h-4 w-4 animate-spin"/>}{policyTask === "train" ? "Training…" : "Train policy"}</button>
+          <button onClick={handleResetPolicy} disabled={policyBusy} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-white/[0.025] px-4 text-sm text-white/60 transition hover:border-white/20 hover:text-white/85 disabled:opacity-50"><RotateCcw className="h-4 w-4"/>Reset</button>
         </div>
-        <div className="grid gap-5 lg:grid-cols-2">
-          <div className="rounded-2xl border border-white/5 p-4">
-            <div className="mb-3 text-xs font-medium text-muted-foreground">Attempts per episode</div>
-            <div className="h-52">
-              <ResponsiveContainer width="100%" height="100%"><LineChart data={policyCurve}><CartesianGrid strokeDasharray="3 3" stroke="#ffffff18"/><XAxis dataKey="episode" tick={{ fontSize: 10 }}/><YAxis domain={[0, 3]} allowDecimals={false} tick={{ fontSize: 10 }}/><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}/><Line type="monotone" dataKey="attempts" stroke="#60a5fa" dot={false}/></LineChart></ResponsiveContainer>
+        <div className="grid gap-3">
+          <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3"><div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/35">Recorded attempts</div><div className="mt-1 text-lg font-semibold tabular-nums text-[#c4f889]">{policyData?.stats?.[policyType]?.totalPulls ?? 0}</div></div>
+        </div>
+        </div>
+        {policyTask === "train" ? (
+          <div className="mx-5 mb-5 rounded-2xl border border-[#b8f36b]/15 bg-[#b8f36b]/[0.035] p-4 sm:mx-7" role="status" aria-live="polite">
+            <div className="flex items-center gap-3">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#b8f36b]/[0.08] text-[#b8f36b]"><RefreshCw className="h-4 w-4 animate-spin"/></div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-white/85">Training remediation policy</div>
+                <div className="mt-1 text-xs text-white/50">{TRAINING_MESSAGES[trainingMessageIndex]}</div>
+              </div>
+              <span className="hidden shrink-0 text-xs tabular-nums text-white/40 sm:inline">{episodes} episodes</span>
+            </div>
+            <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/[0.07]"><motion.div className="h-full w-1/3 rounded-full bg-[#b8f36b]" animate={{ x: ["-100%", "300%"] }} transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}/></div>
+            <p className="mt-2 text-[11px] text-white/35">Training takes at least 15 seconds. Live services are not affected.</p>
+          </div>
+        ) : policyMessage && <div className={`mx-5 mb-5 rounded-xl border px-4 py-3 text-xs sm:mx-7 ${policyMessage.startsWith("Training failed") ? "border-rose-400/20 bg-rose-400/[0.04] text-rose-200" : "border-[#b8f36b]/15 bg-[#b8f36b]/[0.035] text-[#c4f889]"}`} role="status">{policyMessage}</div>}
+        <div className="relative px-5 pb-5 sm:px-7 sm:pb-6">
+        <div className={`grid gap-4 transition-all duration-500 xl:grid-cols-2 ${policyTask === "train" ? "pointer-events-none select-none blur-[5px] opacity-35" : "blur-0 opacity-100"}`} aria-hidden={policyTask === "train"}>
+          <div className="min-w-0 rounded-2xl border border-white/[0.07] bg-[#0b0f14]/55 p-4 sm:p-5">
+            <div className="mb-1 text-sm font-medium text-white/80">Attempts per episode</div><div className="mb-3 text-[11px] text-white/35">Fewer attempts indicate a faster recovery.</div>
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%"><LineChart data={policyCurve} margin={{ top: 8, right: 12, bottom: 2, left: -16 }}><CartesianGrid strokeDasharray="3 5" stroke="#ffffff12"/><XAxis type="number" dataKey="episode" domain={[1, "dataMax"]} tickCount={6} tick={{ fontSize: 10, fill: "#7e8a91" }} axisLine={{ stroke: "#ffffff18" }} tickLine={false}/><YAxis domain={[0, 3]} allowDecimals={false} tick={{ fontSize: 10, fill: "#7e8a91" }} axisLine={false} tickLine={false}/><Tooltip contentStyle={{ background: "#11171d", border: "1px solid #ffffff1a", borderRadius: 12, fontSize: 12 }} labelStyle={{ color: "#c4f889" }}/><Line type="monotone" dataKey="attempts" name="Attempts" stroke="#b8f36b" strokeWidth={2.5} dot={false} activeDot={{ r: 4, fill: "#b8f36b", stroke: "#0b0f14", strokeWidth: 2 }}/></LineChart></ResponsiveContainer>
             </div>
           </div>
-          <div className="rounded-2xl border border-white/5 p-4">
-            <div className="mb-3 text-xs font-medium text-muted-foreground">Success rate per fix (pull count)</div>
-            <div className="h-52">
-              <ResponsiveContainer width="100%" height="100%"><BarChart data={Object.entries(policyData?.stats?.[policyType]?.actions || {}).map(([action, stats]) => ({ action, rate: Math.round(stats.successRate * 100), pulls: stats.pulls }))}><CartesianGrid strokeDasharray="3 3" stroke="#ffffff18"/><XAxis dataKey="action" tick={{ fontSize: 9 }} interval={0} angle={-15} textAnchor="end" height={50}/><YAxis domain={[0, 100]} tick={{ fontSize: 10 }}/><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} formatter={(value, name, item) => name === "rate" ? [`${value}% · ${item.payload.pulls} pulls`, "Success"] : [value, name]}/><Bar dataKey="rate" fill="#34d399" radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer>
+          <div className="min-w-0 rounded-2xl border border-white/[0.07] bg-[#0b0f14]/55 p-4 sm:p-5">
+            <div className="mb-1 text-sm font-medium text-white/80">Success rate by recovery action</div><div className="mb-3 text-[11px] text-white/35">Hover a bar to see its attempt count.</div>
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%"><BarChart data={Object.entries(policyData?.stats?.[policyType]?.actions || {}).map(([action, stats]) => ({ action, rate: Math.round(stats.successRate * 100), pulls: stats.pulls }))} margin={{ top: 8, right: 10, bottom: 8, left: -16 }}><CartesianGrid vertical={false} strokeDasharray="3 5" stroke="#ffffff12"/><XAxis dataKey="action" tick={{ fontSize: 9, fill: "#7e8a91" }} interval={0} angle={-18} textAnchor="end" height={55} axisLine={{ stroke: "#ffffff18" }} tickLine={false}/><YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#7e8a91" }} axisLine={false} tickLine={false}/><Tooltip cursor={false} contentStyle={{ background: "#11171d", border: "1px solid #ffffff1a", borderRadius: 12, fontSize: 12 }} formatter={(value, name, item) => name === "rate" ? [`${value}% · ${item.payload.pulls} attempts`, "Success"] : [value, name]}/><Bar dataKey="rate" name="Success rate" fill="#52c7c1" radius={[5, 5, 0, 0]} maxBarSize={42}/></BarChart></ResponsiveContainer>
             </div>
           </div>
         </div>
-        <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 text-sm">
-          <div className="mb-1 text-xs text-muted-foreground">Last decision</div>
-          {policyData?.lastDecision ? <div><span className="font-mono text-primary">{policyData.lastDecision.decision}</span><span className="ml-2 text-xs text-muted-foreground">{policyData.lastDecision.reason} · confidence {(policyData.lastDecision.confidence * 100).toFixed(0)}%</span><div className="mt-1 text-xs text-muted-foreground">{policyData.lastDecision.evidence}</div></div> : <span className="text-xs text-muted-foreground">No policy decision recorded yet.</span>}
+        {policyTask === "train" && <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-10 grid place-items-center" aria-live="polite">
+          <div className="flex items-center gap-3 rounded-2xl border border-[#b8f36b]/20 bg-[#11171d]/95 px-5 py-4 shadow-2xl backdrop-blur-xl">
+            <RefreshCw className="h-4 w-4 animate-spin text-[#b8f36b]"/>
+            <div><div className="text-sm font-medium text-white/85">Updating charts</div><div className="mt-0.5 text-xs text-white/45">Results appear when training completes.</div></div>
+          </div>
+        </motion.div>}
+        </div>
+        <div className="mx-5 mb-5 flex flex-wrap items-center gap-4 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4 sm:mx-7 sm:mb-7 sm:px-5">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#b8f36b]/[0.08] text-[#b8f36b]"><CheckCircle2 className="h-5 w-5"/></div>
+          <div className="min-w-0 flex-1"><div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/35">Last policy decision</div>
+          {policyData?.lastDecision ? <div className="mt-1"><span className="font-mono text-sm font-semibold text-[#c4f889]">{policyData.lastDecision.decision}</span><span className="ml-2 text-xs text-white/45">{policyData.lastDecision.reason}</span><div className="mt-1 truncate text-xs text-white/35">{policyData.lastDecision.evidence}</div></div> : <div className="mt-1 text-xs text-white/40">No policy decision recorded yet.</div>}</div>
+          {policyData?.lastDecision && <div className="shrink-0 rounded-xl border border-[#b8f36b]/15 bg-[#b8f36b]/[0.05] px-3.5 py-2"><div className="text-[10px] text-white/35">Confidence</div><div className="mt-0.5 text-sm font-semibold tabular-nums text-[#c4f889]">{(policyData.lastDecision.confidence * 100).toFixed(0)}%</div></div>}
         </div>
       </section>
 
