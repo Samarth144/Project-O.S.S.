@@ -27,7 +27,7 @@ function setGlobalState(updater) {
     globalState = updater(globalState);
     listeners.forEach((listener) => listener(globalState));
 }
-function applyIncidentUpdate(type, startedAt, severity, etaMinutes, rootCause) {
+function applyIncidentUpdate(type, startedAt, severity, etaMinutes, rootCause, affectedUserCount) {
     const wasActive = prevIncidentType !== null;
     const isNowClear = type === null;
     const justResolved = wasActive && isNowClear;
@@ -52,7 +52,7 @@ function applyIncidentUpdate(type, startedAt, severity, etaMinutes, rootCause) {
                 severity: severity ?? 'high',
                 rootCause: rootCause ?? 'Analyzing anomalous patterns across telemetry logs...',
                 etaMinutes: etaMinutes ?? 10,
-                affectedUserCount: 0,
+                affectedUserCount: affectedUserCount ?? prev.incident?.affectedUserCount ?? 0,
             },
     }));
 }
@@ -72,7 +72,14 @@ async function fetchInitialStatus() {
         ]);
         if (incRes.status === 'fulfilled') {
             const data = incRes.value;
-            applyIncidentUpdate(data.incident?.type ?? null, data.incident?.startedAt, data.incident?.severity, data.incident?.etaMinutes, data.incident?.rootCause);
+            applyIncidentUpdate(
+                data.incident?.type ?? null,
+                data.incident?.startedAt,
+                data.incident?.severity,
+                data.incident?.etaMinutes,
+                data.incident?.rootCause,
+                data.incident?.affectedUserCount
+            );
         }
         if (preRes.status === 'fulfilled') {
             applyPreAlertUpdate(preRes.value.active, preRes.value.preAlert);
@@ -89,7 +96,14 @@ function initGlobalBus() {
     fetchInitialStatus();
     try {
         sseConnection = connectIncidentStream((data) => {
-            applyIncidentUpdate(data.type, data.startedAt, data.type ? 'high' : undefined, 10);
+            applyIncidentUpdate(
+                data.type,
+                data.startedAt,
+                data.type ? 'high' : undefined,
+                10,
+                undefined,
+                data.affectedUserCount
+            );
         }, (data) => {
             applyPreAlertUpdate(data.active, data.preAlert);
         });

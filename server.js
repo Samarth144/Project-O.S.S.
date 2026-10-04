@@ -13,18 +13,49 @@ try {
 }
 
 // ---------------------------------------------------------
+// Load .env file automatically if present (root or ai/)
+// ---------------------------------------------------------
+const candidateEnvPaths = [
+  path.join(__dirname, '.env'),
+  path.join(__dirname, 'ai', '.env'),
+];
+for (const envPath of candidateEnvPaths) {
+  if (fs.existsSync(envPath)) {
+    try {
+      const envContent = fs.readFileSync(envPath, 'utf8');
+      envContent.split(/\r?\n/).forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const idx = trimmed.indexOf('=');
+        if (idx !== -1) {
+          const key = trimmed.slice(0, idx).trim();
+          let val = trimmed.slice(idx + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      });
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------
 // Supabase — Incident State Persistence
 // Ensures activeIncident survives server restarts.
-// Set SUPABASE_URL and SUPABASE_KEY in your environment.
 // ---------------------------------------------------------
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 const supabase = (createClient && SUPABASE_URL && SUPABASE_KEY)
   ? createClient(SUPABASE_URL, SUPABASE_KEY)
   : null;
 
 if (!supabase) {
-  console.warn('[Supabase] SUPABASE_URL / SUPABASE_KEY not set or @supabase/supabase-js unavailable — incident persistence disabled.');
+  console.warn('[Supabase] SUPABASE_URL / SUPABASE_KEY not set — active_incidents table persistence disabled.');
+} else {
+  console.log(`[Supabase] Incident state persistence enabled (${SUPABASE_URL})`);
 }
 
 /**
@@ -51,12 +82,14 @@ async function persistIncidentState(incident) {
         source_of_truth: 'supabase',
         updated_at:      new Date().toISOString(),
       };
-      if (incident.id) {
-        payload.incident_uuid = incident.id;
-      }
-      await supabase
+      
+      const { error } = await supabase
         .from('active_incidents')
         .upsert(payload, { onConflict: 'incident_type,started_at' });
+
+      if (error) {
+        console.error('[Supabase] Failed to persist active_incident:', error.message);
+      }
     }
   } catch (err) {
     console.error('[Supabase] Failed to persist incident state:', err.message);
@@ -622,7 +655,7 @@ app.post('/simulate-failure', requireToken, (req, res) => {
     incident_uuid,
     type,
     startedAt: new Date().toISOString(),
-    reporterEmail: reporterEmail || 'test@youremail.com',
+    reporterEmail: reporterEmail || 'pranavjadhav1319@gmail.com',
     affectedUserCount: 0,
     affectedUsers: [],
     ragContext: null,
@@ -748,7 +781,7 @@ async function resolveActiveIncident(how = 'manual', command = null) {
     // Build affected customer list for Scribe apology outreach
     const affectedList = (prevIncident.affectedUsers && prevIncident.affectedUsers.length > 0)
       ? prevIncident.affectedUsers
-      : [prevIncident.reporterEmail || 'test@youremail.com'];
+      : [prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com'];
 
     // Notify n8n Scribe for post-mortem logging (fire-and-forget)
     const resolvePayload = {
@@ -762,8 +795,8 @@ async function resolveActiveIncident(how = 'manual', command = null) {
       status: how === 'auto-healed' ? 'auto-healed' : 'resolved',
       resolvedBy: how,
       commandExecuted: command || (how === 'auto-healed' ? 'auto-remediation' : 'manual-override'),
-      reporterEmail: prevIncident.reporterEmail || 'test@youremail.com',
-      reporter_email: prevIncident.reporterEmail || 'test@youremail.com',
+      reporterEmail: prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com',
+      reporter_email: prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com',
       affected_users: affectedList,
       affected_emails: affectedList.join(', '),
       affected_user_count: (prevIncident.affectedUsers && prevIncident.affectedUsers.length) || 0,
@@ -877,6 +910,7 @@ function fetchAndCacheRAGContext(type) {
 
 // GET /api/incident/active - Retrieve current active incident status (smartly integrated with RAG context)
 app.get('/api/incident/active', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   if (activeIncident.type) {
     let severity = 'high';
     let rootCause = 'Analyzing logs for anomalous patterns...';
@@ -1265,9 +1299,10 @@ app.post('/api/banking/transfer', async (req, res, next) => {
     const customerMessage = INCIDENT_CUSTOMER_MESSAGES[activeIncident.type] ||
       'We are experiencing a temporary issue. Your account has not been charged. Please try again shortly.';
 
-    logger.warn('[Banking API] Transfer blocked due to active incident', {
+    logger.error('[Banking API] Transfer blocked due to active incident', {
       incidentType: activeIncident.type,
       amount: numAmount,
+      userId: customerEmail,
       affectedCustomer: customerEmail,
       totalAffectedUsers: activeIncident.affectedUserCount,
       requestId: req.id,
@@ -1435,6 +1470,7 @@ app.get('/api/incidents/stream', (req, res) => {
     startedAt: activeIncident.startedAt,
     status: activeIncident.type ? 'active' : 'idle',
     preAlert: preAlert || null,
+    affectedUserCount: activeIncident.affectedUserCount || 0,
   };
   res.write(`event: init\ndata: ${JSON.stringify(initialPayload)}\n\n`);
 

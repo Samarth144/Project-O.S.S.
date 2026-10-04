@@ -15,6 +15,7 @@ async function request(method, path, body, timeoutMs = 3500) {
         method,
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include',
+        cache: 'no-store',
         signal: AbortSignal.timeout(timeoutMs),
     };
     if (body !== undefined) {

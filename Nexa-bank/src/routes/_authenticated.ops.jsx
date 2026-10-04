@@ -15,7 +15,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { useEffect, useState, useRef } from "react";
 import { Activity, Cpu, Database, Wifi, AlertTriangle, CheckCircle2, RefreshCw, Server, Zap, Users, Clock, FileText, Radio, } from "lucide-react";
-import { getMetrics, resolveIncident } from "@/lib/api";
+import { getMetrics, resolveIncident, transferMoney } from "@/lib/api";
 import { useIncidentBus } from "@/hooks/useIncidentBus";
 export const Route = createFileRoute("/_authenticated/ops")({
     head: () => ({
@@ -118,12 +118,13 @@ function OpsPage() {
     };
     useEffect(() => {
         refreshMetrics();
-        timerRef.current = setInterval(refreshMetrics, REFRESH_MS);
+        const interval = isIncidentActive ? 2000 : 5000;
+        timerRef.current = setInterval(refreshMetrics, interval);
         return () => {
             if (timerRef.current)
                 clearInterval(timerRef.current);
         };
-    }, []);
+    }, [isIncidentActive]);
     const handleSimulate = async () => {
         if (actionRunning || isIncidentActive)
             return;
@@ -172,6 +173,40 @@ function OpsPage() {
         }
         catch (err) {
             console.error("Manual force resolve failed:", err);
+        }
+        finally {
+            setActionRunning(null);
+            setLastRefresh(new Date());
+        }
+    };
+
+    const handleSimulateUser = async () => {
+        if (actionRunning || !isIncidentActive)
+            return;
+        setActionRunning("simUser");
+        try {
+            const demoUsers = [
+                "pranavjadhav1319@gmail.com",
+                "aarav.sharma@nexabank.com",
+                "priya.patel@example.com",
+                "vikram.malhotra@corp.in",
+                "ananya.verma@techbank.in",
+                "rohan.mehta@startup.co",
+                "neha.sharma@cloudfin.io"
+            ];
+            const currentCount = incident?.affectedUserCount || 0;
+            const nextEmail = demoUsers[currentCount % demoUsers.length] || `customer_${Date.now().toString().slice(-4)}@example.com`;
+            await transferMoney({
+                amount: 2500,
+                fromAccount: "savings",
+                toAccount: "ACC-99381042",
+                remarks: "Simulated transfer attempt",
+                method: "IMPS",
+                userEmail: nextEmail,
+            });
+        }
+        catch (_) {
+            // Expected 503 during active incident — backend increments affectedUserCount and broadcasts SSE
         }
         finally {
             setActionRunning(null);
@@ -247,6 +282,16 @@ function OpsPage() {
             {actionRunning === "heal" && <RefreshCw className="h-4 w-4 animate-spin"/>}
             {actionRunning === "heal" ? "Healing..." : "Auto-Heal (Resolve)"}
           </button>
+
+          <button
+            onClick={handleSimulateUser}
+            disabled={actionRunning !== null || !isIncidentActive}
+            className="rounded-xl glass border border-amber-500/30 text-amber-300 hover:bg-amber-500/10 px-5 py-2.5 text-sm font-medium transition flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Simulate another customer attempting a transfer during this incident"
+          >
+            {actionRunning === "simUser" ? <RefreshCw className="h-4 w-4 animate-spin text-amber-400" /> : <Users className="h-4 w-4 text-amber-400" />}
+            +1 Blocked Customer
+          </button>
         </div>
 
         {escalated && (
@@ -297,7 +342,9 @@ function OpsPage() {
               <Users className="h-4 w-4 text-muted-foreground"/>
               <span className="text-sm text-muted-foreground">Affected Users</span>
             </div>
-            <div className="text-xl font-semibold">{snap.affectedUsers}</div>
+            <div className="text-xl font-semibold">
+              {incident?.affectedUserCount ?? snap?.affectedUsers ?? 0}
+            </div>
           </div>
           <div className="rounded-2xl glass-strong p-5">
             <div className="flex items-center gap-2 mb-2">
