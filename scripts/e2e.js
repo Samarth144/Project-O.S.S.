@@ -1,4 +1,4 @@
-﻿/**
+/**
  * e2e.js — Project O.S.S pre-demo smoke test
  * Usage: node scripts/e2e.js
  * All 8 checks must PASS before going live.
@@ -39,6 +39,8 @@ const check = (name, ok) => {
     amount:      1
   });
   check("transfer blocked during incident", t.status >= 500);
+  const activeAfterTransfer = await get("/api/incident/active");
+  check("affected user counted", activeAfterTransfer.incident?.affectedUserCount >= 1);
 
   // 6. Shield chat replies with something
   const c = await (await post("/api/shield/chat", { message: "Is my money safe?", sessionId: "e2e" })).json();

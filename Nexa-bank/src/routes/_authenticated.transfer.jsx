@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
 import { ArrowLeftRight, ChevronDown, ShieldCheck, RefreshCw, CheckCircle2, Copy, Check, X, Receipt, Building2, Wallet, } from "lucide-react";
-import { beneficiaries, useBankStore, formatINR, formatINRDetailed } from "@/lib/mock-data";
+import { beneficiaries, useBankStore, formatINR, formatINRDetailed, user } from "@/lib/mock-data";
 import { transferMoney, ApiError } from "@/lib/api";
 import { useIncidentBus } from "@/hooks/useIncidentBus";
 export const Route = createFileRoute("/_authenticated/transfer")({
@@ -80,6 +80,7 @@ function TransferPage() {
                 toAccount: account,
                 remarks,
                 method,
+                userEmail: user?.email || "aarav.sharma@nexabank.com",
             });
             // 1. Real account deduction in bank store
             const updatedAccounts = deductBalance(fromAcct, numAmount);

@@ -87,6 +87,7 @@ async function restoreIncidentFromSupabase() {
     activeIncident.startedAt       = data.started_at;
     activeIncident.reporterEmail   = data.reporter_email || 'restored@system';
     activeIncident.affectedUserCount = 0;
+    activeIncident.affectedUsers   = [];
     activeIncident.ragContext      = null;
     activeIncident.healAttempts    = 0;
 
@@ -228,7 +229,9 @@ let activeIncident = {
   id: null,
   type: null, // 'payment_down' | 'db_down' | 'api_timeout' | null
   startedAt: null,
+  reporterEmail: null,
   affectedUserCount: 0,
+  affectedUsers: [],
   ragContext: null,
   healAttempts: 0
 };
@@ -621,6 +624,7 @@ app.post('/simulate-failure', requireToken, (req, res) => {
     startedAt: new Date().toISOString(),
     reporterEmail: reporterEmail || 'test@youremail.com',
     affectedUserCount: 0,
+    affectedUsers: [],
     ragContext: null,
     healAttempts: 0
   };
@@ -723,6 +727,7 @@ async function resolveActiveIncident(how = 'manual', command = null) {
     activeIncident.type = null;
     activeIncident.startedAt = null;
     activeIncident.affectedUserCount = 0;
+    activeIncident.affectedUsers = [];
     activeIncident.ragContext = null;
     activeIncident.healAttempts = 0;
 
@@ -740,6 +745,11 @@ async function resolveActiveIncident(how = 'manual', command = null) {
       commandExecuted: command
     });
 
+    // Build affected customer list for Scribe apology outreach
+    const affectedList = (prevIncident.affectedUsers && prevIncident.affectedUsers.length > 0)
+      ? prevIncident.affectedUsers
+      : [prevIncident.reporterEmail || 'test@youremail.com'];
+
     // Notify n8n Scribe for post-mortem logging (fire-and-forget)
     const resolvePayload = {
       incident_uuid: prevIncident.id,
@@ -752,6 +762,11 @@ async function resolveActiveIncident(how = 'manual', command = null) {
       status: how === 'auto-healed' ? 'auto-healed' : 'resolved',
       resolvedBy: how,
       commandExecuted: command || (how === 'auto-healed' ? 'auto-remediation' : 'manual-override'),
+      reporterEmail: prevIncident.reporterEmail || 'test@youremail.com',
+      reporter_email: prevIncident.reporterEmail || 'test@youremail.com',
+      affected_users: affectedList,
+      affected_emails: affectedList.join(', '),
+      affected_user_count: (prevIncident.affectedUsers && prevIncident.affectedUsers.length) || 0,
     };
     sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload).catch(() => {});
 
@@ -1228,12 +1243,33 @@ app.post('/api/banking/transfer', async (req, res, next) => {
 
   // Handle active incident — customer-friendly response
   if (activeIncident.type && ['payment_down', 'db_down', 'api_timeout', 'checkout_failure', 'service_degradation'].includes(activeIncident.type)) {
+    const customerEmail = req.body.userEmail || req.body.email || 'aarav.sharma@nexabank.com';
+    if (!activeIncident.affectedUsers) {
+      activeIncident.affectedUsers = [];
+    }
+    if (!activeIncident.affectedUsers.includes(customerEmail)) {
+      activeIncident.affectedUsers.push(customerEmail);
+      activeIncident.affectedUserCount = activeIncident.affectedUsers.length;
+
+      // Broadcast real-time counter update to Ops dashboard
+      broadcastSSE('incident-update', {
+        incident_uuid: activeIncident.id,
+        id: activeIncident.id,
+        type: activeIncident.type,
+        startedAt: activeIncident.startedAt,
+        status: 'active',
+        affectedUserCount: activeIncident.affectedUserCount,
+      });
+    }
+
     const customerMessage = INCIDENT_CUSTOMER_MESSAGES[activeIncident.type] ||
       'We are experiencing a temporary issue. Your account has not been charged. Please try again shortly.';
 
     logger.warn('[Banking API] Transfer blocked due to active incident', {
       incidentType: activeIncident.type,
       amount: numAmount,
+      affectedCustomer: customerEmail,
+      totalAffectedUsers: activeIncident.affectedUserCount,
       requestId: req.id,
     });
 
