@@ -210,7 +210,7 @@ export async function resolveIncident() {
  * POST /auto-heal
  */
 export async function autoHeal(type) {
-    await request('POST', '/auto-heal', { type });
+    await request('POST', '/auto-heal', { type }, 30000);
 }
 
 export async function getPolicy() {

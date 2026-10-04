@@ -115,6 +115,21 @@ npm start
 node telemetry-watchdog.js
 ```
 
+### Incident Apology Emails
+
+When an incident is resolved, Express sends a post-incident apology email to the configured recipients. The incident type, start/end times, and reference ID are included when available. Configure SMTP in the server environment; credentials are not stored in the repository:
+
+```text
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-smtp-user
+SMTP_PASS=your-smtp-password
+SMTP_FROM=your-verified-sender@example.com
+```
+
+`SMTP_FROM` defaults to `SMTP_USER`. Port 465 defaults to secure TLS. If `SMTP_HOST` or a sender address is missing, incident handling continues and the email is skipped with a log entry.
+
 ---
 
 ## 🧪 Simulation & Testing

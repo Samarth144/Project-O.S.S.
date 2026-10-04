@@ -1,6 +1,7 @@
 const express = require('express');
 const Database = require('better-sqlite3');
 const winston = require('winston');
+const nodemailer = require('nodemailer');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
@@ -162,10 +163,14 @@ let sseClientCounter = 0;
 function broadcastSSE(eventName, data) {
   const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const [id, res] of sseClients) {
+    if (res.destroyed || res.writableEnded) {
+      sseClients.delete(id);
+      continue;
+    }
     try {
       res.write(payload);
     } catch (err) {
-      logger && logger.warn(`SSE write failed for client ${id}`, { error: err.message });
+      logger.warn(`SSE write failed for client ${id}`, { error: err.message });
       sseClients.delete(id);
     }
   }
@@ -197,6 +202,111 @@ const logger = winston.createLogger({
     new winston.transports.File({ filename: LOG_FILE })
   ]
 });
+
+const APOLOGY_RECIPIENTS = [
+  'pranavjadhav1319@gmail.com',
+  'pranavjadhav.kitcoek@gmail.com',
+  'samarthkumbhar8734@gmail.com',
+  'leciwit866@bitproy.com'
+];
+const smtpHost = process.env.SMTP_HOST;
+const smtpPort = Number(process.env.SMTP_PORT || 587);
+const mailTransporter = smtpHost ? nodemailer.createTransport({
+  host: smtpHost,
+  port: smtpPort,
+  secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : smtpPort === 465,
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+  auth: process.env.SMTP_USER && process.env.SMTP_PASS
+    ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    : undefined
+}) : null;
+
+async function sendIncidentApology(type, incident = {}) {
+  if (!mailTransporter) {
+    logger.warn('Incident apology email skipped: SMTP_HOST is not configured', { type });
+    return;
+  }
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (!from) {
+    logger.warn('Incident apology email skipped: set SMTP_FROM or SMTP_USER', { type });
+    return;
+  }
+  const startedAt = incident.startedAt ? new Date(incident.startedAt) : null;
+  const resolvedAt = incident.resolvedAt ? new Date(incident.resolvedAt) : new Date();
+  const date = startedAt ? startedAt.toLocaleDateString() : '[date]';
+  const startTime = startedAt ? startedAt.toLocaleTimeString() : '[start time]';
+  const endTime = resolvedAt.toLocaleTimeString();
+  const incidentId = incident.id || incident.incident_uuid || '[Incident ID]';
+  const serviceNames = {
+    payment_down: 'payment services',
+    db_down: 'database services',
+    api_timeout: 'app and API services',
+    high_error_rate: 'banking services',
+    checkout_failure: 'checkout services',
+    authentication_failure: 'sign-in services',
+    service_degradation: 'banking services',
+    disk_space_critical: 'banking services'
+  };
+  const affectedServices = serviceNames[type] || `${type.replace(/_/g, ' ')} services`;
+  const title = affectedServices.replace(/\b\w/g, letter => letter.toUpperCase());
+  const affectedActivity = type === 'payment_down'
+    ? 'some of your payments and transfers'
+    : 'some banking services, including payments and transfers';
+  const subject = `Our Apology for the ${title} Disruption - Nexa Bank`;
+  const text = `Dear Customer,
+
+We are sorry. On ${date}, between ${startTime} and ${endTime}, Nexa Bank's ${affectedServices} were disrupted, and ${affectedActivity} were delayed or could not be completed. We know how important it is to be able to move your money when you need to, and we did not meet the standard of service you expect from us. We sincerely apologise for the stress and inconvenience this caused.
+
+The service has now been fully restored, and ${affectedServices} are working normally.
+
+WHAT THIS MEANS FOR YOU
+- Your account balance and funds were never at risk.
+- Any transfer you chose to queue has been processed automatically. You can check its status under Transactions in the app.
+- Any payment that did not complete will not result in a lasting debit. If any amount was temporarily held, it has been released or will be within [timeframe].
+- Please check your transaction history before resubmitting any payment, as repeating one that shows as completed or queued could create a duplicate.
+
+WHAT WENT WRONG AND WHAT WE ARE DOING
+The disruption was caused by a technical fault in our ${affectedServices}. Our team identified the cause, applied a fix, and monitored the service closely to confirm it was stable before we declared it resolved. We take responsibility for the disruption, and we are carrying out a full review so we can strengthen our systems and reduce the chance of this happening again.
+
+WE ARE HERE TO HELP
+If you notice a transaction that looks incorrect, or an amount that has not been released, please contact us and we will look into it right away. You can ask Shield in the Nexa Bank app, or reach our Customer Care team at [phone number] or [support email], quoting the reference below.
+
+For your security, Nexa Bank will never ask you for your PIN, password or one-time passcode by email, phone or message.
+
+Thank you for your patience, and again, we are truly sorry. We value your trust and will work to earn it.
+
+Sincerely,
+Customer Care Team
+Nexa Bank
+Reference: ${incidentId}`;
+  const html = `<div style="font-family:Arial,sans-serif;white-space:pre-wrap;line-height:1.5">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`;
+  const deliveries = await Promise.allSettled(APOLOGY_RECIPIENTS.map(async to =>
+    mailTransporter.sendMail({ from, to, subject, text, html })
+  ));
+  deliveries.forEach((delivery, index) => {
+    const recipient = APOLOGY_RECIPIENTS[index];
+    if (delivery.status === 'fulfilled') {
+      logger.info('Incident apology email sent', { type, recipient, messageId: delivery.value.messageId });
+    } else {
+      logger.error('Incident apology email failed', { type, recipient, error: delivery.reason?.message });
+    }
+  });
+}
+
+async function sendResolvedIncidentApology(incident, resolvedAt) {
+  if (!incident?.type) return;
+  logger.info('Sending post-incident apology email', {
+    type: incident.type,
+    incidentId: incident.id || incident.incident_uuid
+  });
+  try {
+    await sendIncidentApology(incident.type, { ...incident, resolvedAt });
+  } catch (error) {
+    logger.error('Incident apology email handler failed', { type: incident.type, error: error.message });
+  }
+}
 
 // ---------------------------------------------------------
 // 2. Database Initialization
@@ -686,7 +796,6 @@ app.post('/simulate-failure', requireToken, (req, res) => {
   fetchAndCacheRAGContext(type);
 
   logger.warn(`INCIDENT SIMULATOR: Activated failure event of type [${type}] (UUID: ${incident_uuid})`, { activeIncident });
-
   // Generate a burst of error logs (minimum 5 entries)
   generateNoiseLogs(type);
 
@@ -878,6 +987,8 @@ app.post('/resolve-incident', requireToken, async (req, res) => {
     return res.status(409).json({ success: false, error: 'Resolution already in progress or incident already cleared.' });
   }
 
+  await sendResolvedIncidentApology(result.prevIncident, result.resolvedAt);
+
   res.json({
     success: true,
     healed: true,
@@ -1037,6 +1148,7 @@ app.post('/api/rag/ingest', (req, res) => {
 // POST /auto-heal - Auto-remediation endpoint triggered by Observer
 // POST /auto-heal - Auto-remediation endpoint with verification and escalation
 app.post('/auto-heal', requireToken, async (req, res) => {
+  try {
   if (!activeIncident.type) {
     logger.warn('[Auto-Heal Engine]: Auto-heal requested but no active incident running.');
     return res.json({ healed: false, reason: 'no active incident' });
@@ -1067,6 +1179,7 @@ app.post('/auto-heal', requireToken, async (req, res) => {
         reason: 'resolution already in progress or already cleared'
       });
     }
+    await sendResolvedIncidentApology(resolved.prevIncident, resolved.resolvedAt);
     logger.warn('Auto-remediation verified and successful. Engineers never got paged.');
     return res.json({
       healed: true,
@@ -1084,6 +1197,15 @@ app.post('/auto-heal', requireToken, async (req, res) => {
       healAttempts: activeIncident.healAttempts,
       incidentType: type
     });
+  }
+  } catch (error) {
+    logger.error('[Auto-Heal Engine]: Request failed without resolving the incident.', {
+      error: error.message,
+      stack: error.stack
+    });
+    if (!res.headersSent) {
+      return res.status(500).json({ healed: false, error: 'Auto-heal failed. The incident remains active.' });
+    }
   }
 });
 
@@ -1172,7 +1294,6 @@ app.post('/api/incident/update', (req, res) => {
     persistIncidentState(activeIncident).catch(() => {}); // persist active state
     fetchAndCacheRAGContext(type);
     logger.warn(`Incident manually updated/triggered via API to [${type}]`, { activeIncident });
-
     // Generate logs for this failure type if it's one of the simulated types
     if (['payment_down', 'db_down', 'api_timeout'].includes(type)) {
       generateNoiseLogs(type);
@@ -1516,6 +1637,16 @@ app.get('/api/incidents/stream', (req, res) => {
   sseClients.set(clientId, res);
   logger.info(`[SSE] Client connected: ${clientId} (total: ${sseClients.size})`);
 
+  let cleanedUp = false;
+  let heartbeat;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    clearInterval(heartbeat);
+    sseClients.delete(clientId);
+    logger.info(`[SSE] Client disconnected: ${clientId} (total: ${sseClients.size})`);
+  };
+
   // Send current state immediately on connect
   const initialPayload = {
     type: activeIncident.type,
@@ -1524,23 +1655,35 @@ app.get('/api/incidents/stream', (req, res) => {
     preAlert: preAlert || null,
     affectedUserCount: activeIncident.affectedUserCount || 0,
   };
-  res.write(`event: init\ndata: ${JSON.stringify(initialPayload)}\n\n`);
+  try {
+    res.write(`event: init\ndata: ${JSON.stringify(initialPayload)}\n\n`);
+  } catch (err) {
+    logger.warn(`[SSE] Initial write failed for client ${clientId}`, { error: err.message });
+    cleanup();
+    return;
+  }
 
   // Heartbeat every 30s to prevent proxy timeouts
-  const heartbeat = setInterval(() => {
+  heartbeat = setInterval(() => {
+    if (res.destroyed || res.writableEnded) {
+      cleanup();
+      return;
+    }
     try {
       res.write(': heartbeat\n\n');
-    } catch {
-      clearInterval(heartbeat);
+    } catch (err) {
+      logger.warn(`[SSE] Heartbeat failed for client ${clientId}`, { error: err.message });
+      cleanup();
     }
   }, 30000);
 
-  // Cleanup on disconnect
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    sseClients.delete(clientId);
-    logger.info(`[SSE] Client disconnected: ${clientId} (total: ${sseClients.size})`);
+  // Socket errors are emitted asynchronously, so listen for them explicitly.
+  res.on('error', err => {
+    logger.warn(`[SSE] Response error for client ${clientId}`, { error: err.message });
+    cleanup();
   });
+  res.on('close', cleanup);
+  req.on('aborted', cleanup);
 });
 
 

@@ -12,6 +12,7 @@
     "express": "^4.21.2",
     "node-fetch": "^2.7.0",
     "node-os-utils": "^2.0.3",
+    "nodemailer": "^7.0.13",
     "winston": "^3.17.0"
   },
   "author": "Senior Backend Architect",

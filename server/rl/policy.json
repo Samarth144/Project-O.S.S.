@@ -1,11 +1,11 @@
 {
   "db_down": {
-    "totalPulls": 59,
+    "totalPulls": 63,
     "actions": {
       "reset_pool": {
-        "pulls": 7,
-        "totalReward": 2.86,
-        "successes": 3
+        "pulls": 11,
+        "totalReward": 6.78,
+        "successes": 7
       },
       "restart_db_conn": {
         "pulls": 14,
@@ -25,12 +25,12 @@
     }
   },
   "payment_down": {
-    "totalPulls": 0,
+    "totalPulls": 16,
     "actions": {
       "reset_gateway_pool": {
-        "pulls": 0,
-        "totalReward": 0,
-        "successes": 0
+        "pulls": 16,
+        "totalReward": 15.680000000000005,
+        "successes": 16
       },
       "switch_backup_gateway": {
         "pulls": 0,
@@ -45,12 +45,12 @@
     }
   },
   "api_timeout": {
-    "totalPulls": 0,
+    "totalPulls": 1,
     "actions": {
       "restart_workers": {
-        "pulls": 0,
-        "totalReward": 0,
-        "successes": 0
+        "pulls": 1,
+        "totalReward": 0.98,
+        "successes": 1
       },
       "scale_workers": {
         "pulls": 0,
