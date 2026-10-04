@@ -1297,7 +1297,7 @@ app.get('/api/incidents/stream', (req, res) => {
 
 
 // POST /api/shield/chat - Interact with Shield assistant via n8n webhook (smartly enriched with dynamic RAG context)
-app.post('/api/shield/chat', async (req, res) => {
+app.post(['/api/shield/chat', '/api/chat', '/api/support/chat'], async (req, res) => {
   const originalMessage = req.body.message || '';
   let contextStr = '';
   
@@ -1324,33 +1324,44 @@ app.post('/api/shield/chat', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(3000), // 3 seconds timeout
+      signal: AbortSignal.timeout(30000), // 30 seconds timeout
     });
 
     const text = await response.text();
-    let data;
+    let parsed;
     try {
-      data = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch (parseErr) {
-      data = { response: text || "Message received by Shield agent." };
+      parsed = text;
     }
-    
-    return res.json(data);
+
+    const extractText = (val) => {
+      if (!val) return '';
+      if (typeof val === 'string') return val;
+      if (Array.isArray(val)) return val.length ? extractText(val[0]) : '';
+      if (typeof val === 'object') {
+        return val.response || val.output || val.message || val.text || val.content || (val.json ? extractText(val.json) : '') || '';
+      }
+      return String(val);
+    };
+
+    const extracted = extractText(parsed);
+    return res.json({ response: extracted || "Message received by Shield agent." });
   } catch (err) {
-    logger.warn('Shield n8n webhook offline or timed out — using RAG vector store answer', { error: err.message });
+    logger.warn('Shield n8n webhook offline or timed out — using intelligent fallback', { error: err.message });
     
-    // Provide intelligent fallback answer using RAG context if available
-    let fallbackAnswer = "I'm Nexa Assistant. I'm checking our systems for you.";
-    if (contextStr) {
-      fallbackAnswer = `Based on our system runbook records:\n\n${contextStr}\n\nOur engineering team monitors all channels to ensure service stability.`;
-    } else {
-      fallbackAnswer = "Thank you for reaching out to Nexa Support. Our systems are currently operational. If you are experiencing any transaction issues, please check the Operations dashboard or retry in a few moments.";
+    const incType = activeIncident?.type ? activeIncident.type.replace(/_/g, ' ') : null;
+    let fallbackAnswer = "Thank you for reaching out to Nexa Support. Our systems are currently operational. If you have any questions, please let us know.";
+    if (incType) {
+      fallbackAnswer = `Hi there,\n\nOur engineering team is currently addressing a **${incType}** issue. We're actively working on restoration and expect normal service shortly. Your account and funds remain completely secure.`;
+    } else if (contextStr) {
+      fallbackAnswer = `Based on our system records:\n\n${contextStr}\n\nOur engineering team is monitoring all channels.`;
     }
 
     return res.json({
       success: true,
       response: fallbackAnswer,
-      source: 'rag_fallback'
+      source: 'fallback'
     });
   }
 });

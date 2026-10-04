@@ -114,12 +114,17 @@ export async function getPreAlertStatus() {
  */
 export async function sendChatMessage(message) {
     try {
-        const data = await request('POST', '/api/shield/chat', { message });
-        return (data.response ||
-            data.output ||
-            data.message ||
-            data.text ||
-            "I've received your message and I'm looking into it. Please hold on a moment.");
+        const data = await request('POST', '/api/shield/chat', { message }, 30000);
+        const extractText = (val) => {
+            if (!val) return '';
+            if (typeof val === 'string') return val;
+            if (Array.isArray(val)) return val.length ? extractText(val[0]) : '';
+            if (typeof val === 'object') {
+                return val.response || val.output || val.message || val.text || val.content || (val.json ? extractText(val.json) : '') || '';
+            }
+            return String(val);
+        };
+        return extractText(data) || "I've received your message and I'm looking into it. Please hold on a moment.";
     }
     catch {
         // Empathetic fallback — never expose internal errors
@@ -191,6 +196,13 @@ export function connectIncidentStream(onIncidentUpdate, onPreAlertUpdate) {
  */
 export async function simulateFailure(type) {
     await request('POST', '/simulate-failure', { type });
+}
+/**
+ * Resolve / clear an active incident manually (for testing/ops)
+ * POST /resolve-incident
+ */
+export async function resolveIncident() {
+    await request('POST', '/resolve-incident');
 }
 /**
  * Trigger auto-heal manually (for testing/ops)
