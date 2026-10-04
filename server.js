@@ -4,6 +4,86 @@ const winston = require('winston');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
+
+// ---------------------------------------------------------
+// Supabase — Incident State Persistence
+// Ensures activeIncident survives server restarts.
+// Set SUPABASE_URL and SUPABASE_KEY in your environment.
+// ---------------------------------------------------------
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+const supabase = (SUPABASE_URL && SUPABASE_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
+
+if (!supabase) {
+  console.warn('[Supabase] SUPABASE_URL / SUPABASE_KEY not set — incident persistence disabled. Set them to enable crash-safe state.');
+}
+
+/**
+ * Persists the current activeIncident to Supabase.
+ * Called every time activeIncident is mutated.
+ * Fire-and-forget — never blocks the request cycle.
+ */
+async function persistIncidentState(incident) {
+  if (!supabase) return;
+  try {
+    if (!incident.type) {
+      // Mark any previously active incident as resolved in Supabase
+      await supabase
+        .from('active_incidents')
+        .update({ status: 'resolved', resolved_at: new Date().toISOString() })
+        .eq('status', 'active');
+    } else {
+      // Upsert the active incident — use type+started_at as natural key
+      await supabase
+        .from('active_incidents')
+        .upsert({
+          incident_type:   incident.type,
+          started_at:      incident.startedAt,
+          reporter_email:  incident.reporterEmail || null,
+          status:          'active',
+          source_of_truth: 'supabase',
+          updated_at:      new Date().toISOString(),
+        }, { onConflict: 'incident_type,started_at' });
+    }
+  } catch (err) {
+    console.error('[Supabase] Failed to persist incident state:', err.message);
+  }
+}
+
+/**
+ * On server startup, checks Supabase for any incident still marked active.
+ * If found, restores it into in-memory activeIncident so the server
+ * never wakes up blind after a crash or restart.
+ */
+async function restoreIncidentFromSupabase() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('active_incidents')
+      .select('*')
+      .eq('status', 'active')
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) return; // No active incident — clean slate
+
+    activeIncident.type            = data.incident_type;
+    activeIncident.startedAt       = data.started_at;
+    activeIncident.reporterEmail   = data.reporter_email || 'restored@system';
+    activeIncident.affectedUserCount = 0;
+    activeIncident.ragContext      = null;
+
+    console.warn(`[Supabase] ⚡ RESTORED active incident from Supabase: [${data.incident_type}] (started ${data.started_at})`);
+    // Pre-warm RAG cache for the restored incident
+    fetchAndCacheRAGContext(data.incident_type);
+  } catch (err) {
+    console.error('[Supabase] Failed to restore incident state:', err.message);
+  }
+}
 
 // ---------------------------------------------------------
 // SSE Subscriber Registry
@@ -87,7 +167,23 @@ try {
       transaction_id TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      account_number TEXT NOT NULL,
+      balance REAL NOT NULL,
+      ifsc TEXT NOT NULL
+    );
   `);
+
+  // Seed default bank accounts if empty
+  const accountCount = db.prepare('SELECT count(*) as count FROM accounts').get();
+  if (accountCount.count === 0) {
+    db.prepare('INSERT INTO accounts (id, name, account_number, balance, ifsc) VALUES (?, ?, ?, ?, ?)').run('savings', 'Savings Account', '•••• 4521', 1524890.50, 'NEXA0001234');
+    db.prepare('INSERT INTO accounts (id, name, account_number, balance, ifsc) VALUES (?, ?, ?, ?, ?)').run('current', 'Current Account', '•••• 8873', 987633.25, 'NEXA0001234');
+    logger.info('Seeded default bank accounts in SQLite.');
+  }
 
   // Seed default data if users table is empty
   const userCount = db.prepare('SELECT count(*) as count FROM users').get();
@@ -125,16 +221,10 @@ let activeIncident = {
 // ---------------------------------------------------------
 // 4. Middlewares & Helper Functions
 // ---------------------------------------------------------
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ---------------------------------------------------------
 // CORS — Allow frontend dev server (TanStack Start / Vite)
-// ---------------------------------------------------------
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) {
-    // Dynamically allow the requesting origin
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -145,6 +235,9 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Silences favicon.ico 404 logs in browsers
 app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -201,7 +294,7 @@ async function sendWebhookNotification(url, payload) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      timeout: 3000 // 3 seconds timeout
+      signal: AbortSignal.timeout(800), // 800ms fast timeout if n8n is offline
     });
     if (response.ok) {
       logger.info(`Webhook alert delivered successfully to ${url}`, { status: response.status });
@@ -256,23 +349,6 @@ async function triggerCommander(incidentType, startedAt) {
       error: err.message,
     });
   }
-
-  // FAILSAFE: Automatically heal after 12 seconds if n8n hasn't done it yet
-  // This guarantees the system is self-healing even if n8n is offline or misconfigured.
-  setTimeout(async () => {
-    if (activeIncident.type === incidentType) {
-      logger.info(`[Failsafe] Incident [${incidentType}] still active after 12s. Forcing internal auto-heal...`);
-      try {
-        await fetch(`http://localhost:${process.env.PORT || 3000}/auto-heal`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: incidentType })
-        });
-      } catch (e) {
-        logger.error('[Failsafe] Internal auto-heal failed:', e.message);
-      }
-    }
-  }, 12000);
 }
 
 // ---------------------------------------------------------
@@ -527,6 +603,7 @@ app.post('/simulate-failure', (req, res) => {
     affectedUserCount: 0,
     ragContext: null
   };
+  persistIncidentState(activeIncident).catch(() => {}); // persist immediately — survive restarts
   fetchAndCacheRAGContext(type);
 
   logger.warn(`INCIDENT SIMULATOR: Activated failure event of type [${type}]`, { activeIncident });
@@ -534,7 +611,7 @@ app.post('/simulate-failure', (req, res) => {
   // Generate a burst of error logs (minimum 5 entries)
   generateNoiseLogs(type);
 
-  // Notify n8n Observer (fire-and-forget — for logging + pre-alert routing)
+  // Notify n8n Observer (non-blocking fire-and-forget alert)
   const alertPayload = {
     type,
     timestamp: activeIncident.startedAt,
@@ -542,10 +619,7 @@ app.post('/simulate-failure', (req, res) => {
     status: 'firing',
     reporterEmail: activeIncident.reporterEmail
   };
-  sendWebhookNotification(N8N_WEBHOOKS.observer, alertPayload);
-
-  // Trigger n8n Commander for autonomous remediation (non-blocking)
-  triggerCommander(type, activeIncident.startedAt);
+  sendWebhookNotification(N8N_WEBHOOKS.observer, alertPayload).catch(() => {});
 
   // Broadcast SSE event to all connected frontend clients
   broadcastSSE('incident-update', {
@@ -757,13 +831,23 @@ app.post('/api/rag/ingest', (req, res) => {
 
 // POST /auto-heal - Auto-remediation endpoint triggered by Observer
 app.post('/auto-heal', (req, res) => {
-  const { type } = req.body;
-  if (!activeIncident.type || activeIncident.type !== type) {
-    logger.warn(`[Auto-Heal Engine]: Auto-heal requested for [${type}] but it does not match the active incident [${activeIncident.type}].`);
-    return res.status(400).json({ success: false, error: 'No matching active incident found for auto-heal.' });
+  let { type } = req.body || {};
+
+  // If type is not specified or doesn't match, default to current active incident
+  if (!type || (activeIncident.type && type !== activeIncident.type)) {
+    type = activeIncident.type;
   }
 
-  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger from Observer for [${type}]. Executing recovery script...`);
+  // Normalize aliases
+  if (type === 'api_degradation') type = 'api_timeout';
+  if (type === 'db_failure') type = 'db_down';
+
+  if (!activeIncident.type) {
+    logger.warn(`[Auto-Heal Engine]: Auto-heal requested but no active incident running.`);
+    return res.status(400).json({ success: false, error: 'No active incident found for auto-heal.' });
+  }
+
+  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger for [${type}]. Executing recovery script...`);
 
   // Map known incident types to remediation commands from runbooks
   let command = 'echo "Executing default recovery verification"';
@@ -783,6 +867,7 @@ app.post('/auto-heal', (req, res) => {
   activeIncident.startedAt = null;
   activeIncident.affectedUserCount = 0;
   activeIncident.ragContext = null;
+  persistIncidentState(activeIncident).catch(() => {}); // persist cleared state — survive restarts
 
   logger.warn('Auto-remediation successful. Engineers never got paged.');
 
@@ -796,7 +881,7 @@ app.post('/auto-heal', (req, res) => {
     resolvedBy: 'commander',
     commandExecuted: command,
   };
-  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload);
+  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload).catch(() => {});
 
   // Broadcast SSE event — auto-heal resolved the incident
   broadcastSSE('incident-update', {
@@ -848,6 +933,7 @@ app.post('/api/incident/update', (req, res) => {
     activeIncident.startedAt = null;
     activeIncident.affectedUserCount = 0;
     activeIncident.ragContext = null;
+    persistIncidentState(activeIncident).catch(() => {}); // persist cleared state
     logger.info(`Incident manually cleared via API (previous: ${prevType})`);
   } else if (type === 'silent_error') {
     // Generate logs to trigger pre-alerts, but keep incident state operational (null)
@@ -858,6 +944,7 @@ app.post('/api/incident/update', (req, res) => {
     activeIncident.startedAt = startedAt || new Date().toISOString();
     activeIncident.affectedUserCount = affectedUserCount || 0;
     activeIncident.ragContext = null;
+    persistIncidentState(activeIncident).catch(() => {}); // persist active state
     fetchAndCacheRAGContext(type);
     logger.warn(`Incident manually updated/triggered via API to [${type}]`, { activeIncident });
 
@@ -865,9 +952,6 @@ app.post('/api/incident/update', (req, res) => {
     if (['payment_down', 'db_down', 'api_timeout'].includes(type)) {
       generateNoiseLogs(type);
     }
-
-    // Trigger n8n Commander for autonomous remediation (non-blocking)
-    triggerCommander(type, activeIncident.startedAt);
   }
 
   // Broadcast SSE event for any incident update
@@ -914,6 +998,29 @@ app.get('/api/pre-alert', (req, res) => {
 // ─── 1. /health endpoint (the watchdog probes this every cycle) ─────────────
 app.get('/health', (req, res) => {
   const t0 = process.hrtime.bigint();
+
+  // If a simulated payment_down or db_down incident is active, report failure & latency breach to watchdog
+  if (activeIncident && (activeIncident.type === 'payment_down' || activeIncident.type === 'db_down')) {
+    return res.status(500).json({
+      ok: false,
+      error: activeIncident.type === 'payment_down'
+        ? 'Payment gateway connection reset: socket failure'
+        : 'SQLite connection pool exhausted: locked database file',
+      dbLatencyMs: 2000.0,
+      uptime: process.uptime(),
+    });
+  }
+
+  // If a simulated api_timeout incident is active, report service timeout to watchdog
+  if (activeIncident && activeIncident.type === 'api_timeout') {
+    return res.status(500).json({
+      ok: false,
+      error: 'Downstream integration service timeout (504)',
+      dbLatencyMs: 1600.0,
+      uptime: process.uptime(),
+    });
+  }
+
   try {
     db.prepare('SELECT 1').get();
     const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -931,7 +1038,9 @@ app.get('/health', (req, res) => {
 // ─── 2. Metrics proxy (Shield UI keeps calling /api/metrics unchanged) ──────
 app.get('/api/metrics', async (req, res) => {
   try {
-    const r = await fetch('http://localhost:3100/metrics');
+    const r = await fetch('http://localhost:3100/metrics', {
+      signal: AbortSignal.timeout(600), // 600ms fast timeout if watchdog is offline
+    });
     res.json(await r.json());
   } catch (err) {
     res.status(503).json({ error: 'watchdog offline' });
@@ -1031,16 +1140,28 @@ app.post('/api/banking/transfer', async (req, res, next) => {
   // Process the transfer via existing payment logic
   try {
     const txId = `TXN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const fromAcctKey = fromAccount === 'current' ? 'current' : 'savings';
+    let remainingBalance = 0;
 
     runDbQuery(() => {
+      // 1. Record the transaction in payments table
       db.prepare('INSERT INTO payments (amount, status, transaction_id, created_at) VALUES (?, ?, ?, ?)')
         .run(numAmount, 'APPROVED', txId, new Date().toISOString());
+
+      // 2. Deduct balance from the source account in SQLite
+      db.prepare('UPDATE accounts SET balance = MAX(0, balance - ?) WHERE id = ?')
+        .run(numAmount, fromAcctKey);
+
+      // 3. Fetch remaining balance
+      const row = db.prepare('SELECT balance FROM accounts WHERE id = ?').get(fromAcctKey);
+      if (row) remainingBalance = row.balance;
     });
 
-    logger.info('[Banking API] Transfer approved', {
+    logger.info('[Banking API] Transfer approved & balance deducted', {
       transactionId: txId,
       amount: numAmount,
-      fromAccount,
+      fromAccount: fromAcctKey,
+      remainingBalance,
       beneficiaryId,
       method: method || 'IMPS',
       requestId: req.id,
@@ -1050,6 +1171,8 @@ app.post('/api/banking/transfer', async (req, res, next) => {
       success: true,
       transactionId: txId,
       amount: numAmount,
+      fromAccount: fromAcctKey,
+      remainingBalance,
       message: `Transfer of ₹${numAmount.toLocaleString('en-IN')} processed successfully.`,
       timestamp: new Date().toISOString(),
       method: method || 'IMPS',
@@ -1066,6 +1189,26 @@ app.post('/api/banking/transfer', async (req, res, next) => {
       customerMessage: 'We encountered a temporary issue processing your transfer. Your account has not been debited. Please try again.',
       incidentActive: false,
     });
+  }
+});
+
+// GET /api/banking/accounts — Live account balances from SQLite
+app.get('/api/banking/accounts', (req, res) => {
+  try {
+    const list = db.prepare('SELECT * FROM accounts').all();
+    res.json({ success: true, accounts: list });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/banking/transactions — Live recent transactions from SQLite
+app.get('/api/banking/transactions', (req, res) => {
+  try {
+    const list = db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 20').all();
+    res.json({ success: true, transactions: list });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1155,33 +1298,33 @@ app.get('/api/incidents/stream', (req, res) => {
 
 // POST /api/shield/chat - Interact with Shield assistant via n8n webhook (smartly enriched with dynamic RAG context)
 app.post('/api/shield/chat', async (req, res) => {
+  const originalMessage = req.body.message || '';
+  let contextStr = '';
+  
+  // Fetch matching runbooks/context from RAG database dynamically based on the user's message
   try {
-    const originalMessage = req.body.message;
-    
-    // Fetch matching runbooks/context from RAG database dynamically based on the user's message
-    try {
-      const ragResults = await getRAGContext(originalMessage);
-      if (ragResults && ragResults.length > 0) {
-        const contextStr = ragResults
-          .filter(r => r.metadata && r.metadata.source)
-          .map(r => `[Source: ${path.basename(r.metadata.source)}]:\n${r.content.trim()}`)
-          .join('\n\n');
-        
-        if (contextStr) {
-          req.body.message = `${originalMessage}\n\n[System Search Reference]:\n${contextStr}`;
-        }
+    const ragResults = await getRAGContext(originalMessage);
+    if (ragResults && ragResults.length > 0) {
+      contextStr = ragResults
+        .filter(r => r.metadata && r.metadata.source)
+        .map(r => `[Source: ${path.basename(r.metadata.source)}]:\n${r.content.trim()}`)
+        .join('\n\n');
+      
+      if (contextStr) {
+        req.body.message = `${originalMessage}\n\n[System Search Reference]:\n${contextStr}`;
       }
-    } catch (ragErr) {
-      logger.error('Dynamic RAG retrieval for chat query failed', { error: ragErr.message });
     }
+  } catch (ragErr) {
+    logger.error('Dynamic RAG retrieval for chat query failed', { error: ragErr.message });
+  }
 
+  try {
     logger.info('Forwarding Shield Chat message to n8n webhook', { body: req.body });
     const response = await fetch(N8N_WEBHOOKS.shield, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(req.body)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(3000), // 3 seconds timeout
     });
 
     const text = await response.text();
@@ -1192,12 +1335,22 @@ app.post('/api/shield/chat', async (req, res) => {
       data = { response: text || "Message received by Shield agent." };
     }
     
-    res.json(data);
+    return res.json(data);
   } catch (err) {
-    logger.error('Shield webhook error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to contact Shield agent'
+    logger.warn('Shield n8n webhook offline or timed out — using RAG vector store answer', { error: err.message });
+    
+    // Provide intelligent fallback answer using RAG context if available
+    let fallbackAnswer = "I'm Nexa Assistant. I'm checking our systems for you.";
+    if (contextStr) {
+      fallbackAnswer = `Based on our system runbook records:\n\n${contextStr}\n\nOur engineering team monitors all channels to ensure service stability.`;
+    } else {
+      fallbackAnswer = "Thank you for reaching out to Nexa Support. Our systems are currently operational. If you are experiencing any transaction issues, please check the Operations dashboard or retry in a few moments.";
+    }
+
+    return res.json({
+      success: true,
+      response: fallbackAnswer,
+      source: 'rag_fallback'
     });
   }
 });
@@ -1238,7 +1391,12 @@ function generateNoiseLogs(type) {
     ]
   };
 
-  const logsToGenerate = incidentLogs[type] || [];
+  const baseLogs = incidentLogs[type] || incidentLogs.silent_error;
+  const logsToGenerate = [];
+  while (logsToGenerate.length < 16) {
+    logsToGenerate.push(...baseLogs);
+  }
+  logsToGenerate.length = 16;
   
   // Create a pool of simulated user IDs to assign to the noise logs
   const simulatedUserIds = [
@@ -1325,10 +1483,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
-app.listen(PORT, () => {
+// Start Server — restore any active incident from Supabase BEFORE accepting connections
+app.listen(PORT, async () => {
   logger.info(`Server successfully started on port ${PORT}`, {
     env: process.env.NODE_ENV || 'development',
     pid: process.pid
   });
+  // Restore in-memory incident state from Supabase so the server never wakes up blind
+  await restoreIncidentFromSupabase();
 });

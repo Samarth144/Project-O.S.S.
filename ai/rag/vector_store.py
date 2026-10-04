@@ -3,7 +3,9 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 class VectorStoreManager:
-    def __init__(self, persist_directory="./chroma_db", embedding_model_name="all-MiniLM-L6-v2"):
+    def __init__(self, persist_directory=None, embedding_model_name="all-MiniLM-L6-v2"):
+        if persist_directory is None:
+            persist_directory = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "chroma_db"))
         self.persist_directory = persist_directory
         self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
         self.vector_store = self._init_vector_store()

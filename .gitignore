@@ -20,6 +20,8 @@ logs/*.log
 *.db
 *.db-journal
 chroma_db/
+ai/chroma_db/
+watchdog-dead-letters.jsonl
 
 # OS Metadata
 .DS_Store
