@@ -587,7 +587,7 @@ app.post('/payment', async (req, res, next) => {
 // ---------------------------------------------------------
 
 // POST /simulate-failure - Trigger an incident state
-app.post('/simulate-failure', (req, res) => {
+app.post('/simulate-failure', requireToken, (req, res) => {
   let { type, reporterEmail } = req.body;
 
   // Normalize aliases for convenience
@@ -673,15 +673,23 @@ app.post('/simulate-failure', (req, res) => {
  * If INTERNAL_API_KEY is configured in environment, validates header.
  * If not set, allows local UI and testing requests without error.
  */
+const OSS_TOKEN = process.env.OSS_TOKEN || 'dev-token';
 function requireToken(req, res, next) {
+  const token = req.headers['authorization'] || req.headers['x-api-key'] || req.headers['x-oss-token'];
+  
+  // 1. Check for dev demo token (Fix 3)
+  if (req.get('x-oss-token') === OSS_TOKEN) {
+    return next();
+  }
+
+  // 2. Check for upstream internal API key
   const expectedKey = process.env.INTERNAL_API_KEY;
   if (!expectedKey) return next();
 
-  const token = req.headers['authorization'] || req.headers['x-api-key'];
   if (token === expectedKey || token === `Bearer ${expectedKey}`) {
     return next();
   }
-  return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key.' });
+  return res.status(401).json({ error: 'Unauthorized: Invalid or missing token.' });
 }
 
 /**
@@ -765,7 +773,7 @@ async function resolveActiveIncident(how = 'manual', command = null) {
 }
 
 // POST /resolve-incident - Manual engineer resolution override
-app.post('/resolve-incident', async (req, res) => {
+app.post('/resolve-incident', requireToken, async (req, res) => {
   if (!activeIncident.type) {
     logger.warn('Resolve incident requested but no active incident running.');
     return res.status(400).json({ success: false, error: 'No active incident to resolve.' });
