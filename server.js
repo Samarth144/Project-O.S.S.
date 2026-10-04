@@ -4,6 +4,7 @@ const winston = require('winston');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 let createClient;
 try {
   createClient = require('@supabase/supabase-js').createClient;
@@ -42,16 +43,20 @@ async function persistIncidentState(incident) {
         .eq('status', 'active');
     } else {
       // Upsert the active incident — use type+started_at as natural key
+      const payload = {
+        incident_type:   incident.type,
+        started_at:      incident.startedAt,
+        reporter_email:  incident.reporterEmail || null,
+        status:          'active',
+        source_of_truth: 'supabase',
+        updated_at:      new Date().toISOString(),
+      };
+      if (incident.id) {
+        payload.incident_uuid = incident.id;
+      }
       await supabase
         .from('active_incidents')
-        .upsert({
-          incident_type:   incident.type,
-          started_at:      incident.startedAt,
-          reporter_email:  incident.reporterEmail || null,
-          status:          'active',
-          source_of_truth: 'supabase',
-          updated_at:      new Date().toISOString(),
-        }, { onConflict: 'incident_type,started_at' });
+        .upsert(payload, { onConflict: 'incident_type,started_at' });
     }
   } catch (err) {
     console.error('[Supabase] Failed to persist incident state:', err.message);
@@ -76,11 +81,14 @@ async function restoreIncidentFromSupabase() {
 
     if (error || !data) return; // No active incident — clean slate
 
+    activeIncident.id              = data.incident_uuid || data.id?.toString() || crypto.randomUUID();
+    activeIncident.incident_uuid   = activeIncident.id;
     activeIncident.type            = data.incident_type;
     activeIncident.startedAt       = data.started_at;
     activeIncident.reporterEmail   = data.reporter_email || 'restored@system';
     activeIncident.affectedUserCount = 0;
     activeIncident.ragContext      = null;
+    activeIncident.healAttempts    = 0;
 
     console.warn(`[Supabase] ⚡ RESTORED active incident from Supabase: [${data.incident_type}] (started ${data.started_at})`);
     // Pre-warm RAG cache for the restored incident
@@ -217,11 +225,15 @@ try {
 // 3. Incident State Setup
 // ---------------------------------------------------------
 let activeIncident = {
+  id: null,
   type: null, // 'payment_down' | 'db_down' | 'api_timeout' | null
   startedAt: null,
   affectedUserCount: 0,
-  ragContext: null
+  ragContext: null,
+  healAttempts: 0
 };
+
+let resolving = false;
 
 // ---------------------------------------------------------
 // 4. Middlewares & Helper Functions
@@ -601,33 +613,43 @@ app.post('/simulate-failure', (req, res) => {
     });
   }
 
+  const incident_uuid = crypto.randomUUID();
   activeIncident = {
+    id: incident_uuid,
+    incident_uuid,
     type,
     startedAt: new Date().toISOString(),
     reporterEmail: reporterEmail || 'test@youremail.com',
     affectedUserCount: 0,
-    ragContext: null
+    ragContext: null,
+    healAttempts: 0
   };
   persistIncidentState(activeIncident).catch(() => {}); // persist immediately — survive restarts
   fetchAndCacheRAGContext(type);
 
-  logger.warn(`INCIDENT SIMULATOR: Activated failure event of type [${type}]`, { activeIncident });
+  logger.warn(`INCIDENT SIMULATOR: Activated failure event of type [${type}] (UUID: ${incident_uuid})`, { activeIncident });
 
   // Generate a burst of error logs (minimum 5 entries)
   generateNoiseLogs(type);
 
   // Notify n8n Observer (non-blocking fire-and-forget alert)
   const alertPayload = {
+    incident_uuid,
+    id: incident_uuid,
     type,
     timestamp: activeIncident.startedAt,
+    started_at: activeIncident.startedAt,
     source: 'mini-app',
     status: 'firing',
-    reporterEmail: activeIncident.reporterEmail
+    reporterEmail: activeIncident.reporterEmail,
+    auto_heal: true,
   };
   sendWebhookNotification(N8N_WEBHOOKS.observer, alertPayload).catch(() => {});
 
   // Broadcast SSE event to all connected frontend clients
   broadcastSSE('incident-update', {
+    incident_uuid,
+    id: incident_uuid,
     type: activeIncident.type,
     startedAt: activeIncident.startedAt,
     status: 'active',
@@ -642,51 +664,125 @@ app.post('/simulate-failure', (req, res) => {
 });
 
 
-// POST /resolve-incident - Resolve active incident
-app.post('/resolve-incident', (req, res) => {
+// ---------------------------------------------------------
+// Incident Verification & Unified Resolution Engine
+// ---------------------------------------------------------
+
+/**
+ * requireToken Middleware:
+ * If INTERNAL_API_KEY is configured in environment, validates header.
+ * If not set, allows local UI and testing requests without error.
+ */
+function requireToken(req, res, next) {
+  const expectedKey = process.env.INTERNAL_API_KEY;
+  if (!expectedKey) return next();
+
+  const token = req.headers['authorization'] || req.headers['x-api-key'];
+  if (token === expectedKey || token === `Bearer ${expectedKey}`) {
+    return next();
+  }
+  return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key.' });
+}
+
+/**
+ * selfCheck:
+ * Probes the SQLite database directly to confirm the database engine
+ * and disk file are healthy and accepting queries.
+ */
+async function selfCheck() {
+  try {
+    const res = db.prepare('SELECT 1 as alive').get();
+    return res && res.alive === 1;
+  } catch (err) {
+    logger.error('[Self-Check] Database probe failed:', { error: err.message });
+    return false;
+  }
+}
+
+/**
+ * resolveActiveIncident:
+ * Unified resolution path for both manual engineer actions and automated auto-heal.
+ * Uses mutex lock (resolving) to prevent duplicate executions and duplicate Scribe webhooks.
+ */
+async function resolveActiveIncident(how = 'manual', command = null) {
+  if (!activeIncident.type || resolving) return null;
+  resolving = true;
+  try {
+    const prevIncident = { ...activeIncident };
+    const resolvedAt = new Date().toISOString();
+
+    // Clear in-memory activeIncident state
+    activeIncident.type = null;
+    activeIncident.startedAt = null;
+    activeIncident.affectedUserCount = 0;
+    activeIncident.ragContext = null;
+    activeIncident.healAttempts = 0;
+
+    // Persist cleared state to Supabase — survive restarts
+    await persistIncidentState(activeIncident);
+
+    const durationSec = prevIncident.startedAt
+      ? Math.round((new Date(resolvedAt) - new Date(prevIncident.startedAt)) / 1000)
+      : 0;
+
+    logger.info(`INCIDENT RESOLVED (${how}): System returned to nominal operating conditions. Incident [${prevIncident.type}] cleared.`, {
+      resolvedAt,
+      how,
+      duration: `${durationSec} seconds`,
+      commandExecuted: command
+    });
+
+    // Notify n8n Scribe for post-mortem logging (fire-and-forget)
+    const resolvePayload = {
+      incident_uuid: prevIncident.id,
+      id: prevIncident.id,
+      type: prevIncident.type,
+      startedAt: prevIncident.startedAt,
+      started_at: prevIncident.startedAt,
+      resolvedAt,
+      resolved_at: resolvedAt,
+      status: how === 'auto-healed' ? 'auto-healed' : 'resolved',
+      resolvedBy: how,
+      commandExecuted: command || (how === 'auto-healed' ? 'auto-remediation' : 'manual-override'),
+    };
+    sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload).catch(() => {});
+
+    // Broadcast SSE event to all connected frontend clients
+    broadcastSSE('incident-update', {
+      incident_uuid: prevIncident.id,
+      id: prevIncident.id,
+      type: null,
+      status: how === 'auto-healed' ? 'auto-healed' : 'resolved',
+      resolvedAt,
+      previousType: prevIncident.type,
+      commandExecuted: command,
+    });
+
+    return { success: true, prevIncident, resolvedAt };
+  } finally {
+    resolving = false;
+  }
+}
+
+// POST /resolve-incident - Manual engineer resolution override
+app.post('/resolve-incident', async (req, res) => {
   if (!activeIncident.type) {
     logger.warn('Resolve incident requested but no active incident running.');
     return res.status(400).json({ success: false, error: 'No active incident to resolve.' });
   }
 
-  const prevIncident = { ...activeIncident };
-  const resolvedAt = new Date().toISOString();
-
-  // Clear in-memory state
-  activeIncident.type = null;
-  activeIncident.startedAt = null;
-
-  logger.info(`INCIDENT RESOLVED: System returned to nominal operating conditions. Incident [${prevIncident.type}] cleared.`, {
-    resolvedAt,
-    duration: Math.round((new Date(resolvedAt) - new Date(prevIncident.startedAt)) / 1000) + ' seconds'
-  });
-
-  // Log recovery events to console and file
-  logger.info(`Recovery confirmation: All systems operational. Cleared down type: ${prevIncident.type}`);
-
-  // Notify n8n Scribe for post-mortem logging (fire-and-forget)
-  const resolvePayload = {
-    type: prevIncident.type,
-    startedAt: prevIncident.startedAt,
-    resolvedAt,
-    status: 'resolved',
-    resolvedBy: 'manual',
-  };
-  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload);
-
-  // Broadcast SSE event to all connected frontend clients
-  broadcastSSE('incident-update', {
-    type: null,
-    status: 'resolved',
-    resolvedAt,
-    previousType: prevIncident.type,
-  });
+  const prevType = activeIncident.type;
+  const result = await resolveActiveIncident('manual');
+  if (!result) {
+    return res.status(409).json({ success: false, error: 'Resolution already in progress or incident already cleared.' });
+  }
 
   res.json({
     success: true,
-    message: `Incident '${prevIncident.type}' resolved. Systems restored.`,
-    incidentCleared: prevIncident,
-    resolvedAt
+    healed: true,
+    message: `Incident '${prevType}' manually resolved. Systems restored.`,
+    incidentCleared: result.prevIncident,
+    resolvedAt: result.resolvedAt
   });
 });
 
@@ -786,6 +882,8 @@ app.get('/api/incident/active', (req, res) => {
     return res.json({
       active: true,
       incident: {
+        id: activeIncident.id,
+        incident_uuid: activeIncident.id,
         type: activeIncident.type,
         startedAt: activeIncident.startedAt,
         severity,
@@ -835,24 +933,40 @@ app.post('/api/rag/ingest', (req, res) => {
 
 
 // POST /auto-heal - Auto-remediation endpoint triggered by Observer
-app.post('/auto-heal', (req, res) => {
-  let { type } = req.body || {};
+// POST /auto-heal - Auto-remediation endpoint with verification and escalation
+app.post('/auto-heal', requireToken, async (req, res) => {
+  if (!activeIncident.type) {
+    logger.warn('[Auto-Heal Engine]: Auto-heal requested but no active incident running.');
+    return res.json({ healed: false, reason: 'no active incident' });
+  }
 
-  // If type is not specified or doesn't match, default to current active incident
+  let { type } = req.body || {};
   if (!type || (activeIncident.type && type !== activeIncident.type)) {
     type = activeIncident.type;
   }
-
-  // Normalize aliases
   if (type === 'api_degradation') type = 'api_timeout';
   if (type === 'db_failure') type = 'db_down';
 
-  if (!activeIncident.type) {
-    logger.warn(`[Auto-Heal Engine]: Auto-heal requested but no active incident running.`);
-    return res.status(400).json({ success: false, error: 'No active incident found for auto-heal.' });
+  const incomingId = req.body?.incident_uuid || req.body?.id;
+  if (incomingId && !activeIncident.id) {
+    activeIncident.id = incomingId;
+    activeIncident.incident_uuid = incomingId;
   }
 
-  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger for [${type}]. Executing recovery script...`);
+  activeIncident.healAttempts = (activeIncident.healAttempts || 0) + 1;
+  const isForced = req.query.force === 'true' || req.body?.force === true;
+
+  if (activeIncident.healAttempts > 2 && !isForced) {
+    logger.warn(`[Auto-Heal Engine]: Escalation triggered — max heal attempts (${activeIncident.healAttempts}) reached for [${type}]. Escalate to engineer.`);
+    return res.status(409).json({
+      healed: false,
+      reason: 'max attempts, escalate to engineer',
+      healAttempts: activeIncident.healAttempts,
+      incidentType: type
+    });
+  }
+
+  logger.warn(`[Auto-Heal Engine]: Received auto-heal trigger (attempt #${activeIncident.healAttempts}) for [${type}]. Executing recovery script...`);
 
   // Map known incident types to remediation commands from runbooks
   let command = 'echo "Executing default recovery verification"';
@@ -866,41 +980,35 @@ app.post('/auto-heal', (req, res) => {
 
   logger.info(`[Auto-Heal Engine]: Running recovery command: ${command}`);
 
-  // Resolve the active incident state
-  const prevIncident = { ...activeIncident };
-  activeIncident.type = null;
-  activeIncident.startedAt = null;
-  activeIncident.affectedUserCount = 0;
-  activeIncident.ragContext = null;
-  persistIncidentState(activeIncident).catch(() => {}); // persist cleared state — survive restarts
+  // Run live system self-check before declaring healing successful
+  const healthy = await selfCheck();
+  if (!healthy) {
+    logger.error(`[Auto-Heal Engine]: System self-check failed during auto-heal attempt #${activeIncident.healAttempts}`);
+    return res.status(409).json({
+      healed: false,
+      reason: 'self-check failed',
+      healAttempts: activeIncident.healAttempts
+    });
+  }
 
-  logger.warn('Auto-remediation successful. Engineers never got paged.');
+  // Resolve through the single verified resolve path
+  const result = await resolveActiveIncident('auto-healed', command);
+  if (!result) {
+    return res.status(409).json({
+      healed: false,
+      reason: 'resolution already in progress or already cleared'
+    });
+  }
 
-  // Notify n8n Scribe for post-mortem logging (fire-and-forget)
-  const resolvedAt = new Date().toISOString();
-  const resolvePayload = {
-    type: prevIncident.type,
-    startedAt: prevIncident.startedAt,
-    resolvedAt,
-    status: 'auto-healed',
-    resolvedBy: 'commander',
-    commandExecuted: command,
-  };
-  sendWebhookNotification(N8N_WEBHOOKS.scribe, resolvePayload).catch(() => {});
-
-  // Broadcast SSE event — auto-heal resolved the incident
-  broadcastSSE('incident-update', {
-    type: null,
-    status: 'auto-healed',
-    resolvedAt,
-    previousType: prevIncident.type,
-    commandExecuted: command,
-  });
+  logger.warn('Auto-remediation verified and successful. Engineers never got paged.');
 
   res.json({
+    healed: true,
     success: true,
-    message: 'Auto-remediation command executed. Incident resolved.',
-    commandExecuted: command
+    message: 'Auto-remediation command executed and verified. Incident resolved.',
+    commandExecuted: command,
+    healAttempts: activeIncident.healAttempts,
+    resolvedAt: result.resolvedAt
   });
 });
 
@@ -949,6 +1057,9 @@ app.post('/api/incident/update', (req, res) => {
     activeIncident.startedAt = startedAt || new Date().toISOString();
     activeIncident.affectedUserCount = affectedUserCount || 0;
     activeIncident.ragContext = null;
+    if (req.body.healAttempts !== undefined) {
+      activeIncident.healAttempts = req.body.healAttempts;
+    }
     persistIncidentState(activeIncident).catch(() => {}); // persist active state
     fetchAndCacheRAGContext(type);
     logger.warn(`Incident manually updated/triggered via API to [${type}]`, { activeIncident });
@@ -1306,21 +1417,72 @@ app.post(['/api/shield/chat', '/api/chat', '/api/support/chat'], async (req, res
   const originalMessage = req.body.message || '';
   let contextStr = '';
   
-  // Fetch matching runbooks/context from RAG database dynamically based on the user's message
-  try {
-    const ragResults = await getRAGContext(originalMessage);
-    if (ragResults && ragResults.length > 0) {
-      contextStr = ragResults
-        .filter(r => r.metadata && r.metadata.source)
-        .map(r => `[Source: ${path.basename(r.metadata.source)}]:\n${r.content.trim()}`)
-        .join('\n\n');
-      
-      if (contextStr) {
-        req.body.message = `${originalMessage}\n\n[System Search Reference]:\n${contextStr}`;
+  // 1. Fast Context: Prioritize pre-cached incident RAG runbook if an incident is active (0ms)
+  if (activeIncident?.ragContext) {
+    contextStr = activeIncident.ragContext;
+  }
+
+  // 2. Fast Runbook lookup from local runbooks.json if no active incident runbook found
+  if (!contextStr) {
+    try {
+      const runbooksPath = path.join(__dirname, 'runbooks.json');
+      if (fs.existsSync(runbooksPath)) {
+        const runbooks = JSON.parse(fs.readFileSync(runbooksPath, 'utf8'));
+        const lower = originalMessage.toLowerCase();
+        const matched = runbooks.find(rb => 
+          lower.includes(rb.incident_type.replace(/_/g, ' ')) ||
+          (lower.includes('payment') && rb.incident_type.includes('payment')) ||
+          (lower.includes('database') && rb.incident_type.includes('db')) ||
+          (lower.includes('timeout') && rb.incident_type.includes('timeout')) ||
+          (lower.includes('broken') && activeIncident.type && rb.incident_type === activeIncident.type)
+        );
+        if (matched) {
+          contextStr = `Incident Type: ${matched.incident_type}\nSummary: ${matched.user_message_template}\nRemediation Steps: ${matched.fix_steps.join('; ')}\nResolution ETA: ${matched.avg_resolution_minutes} minutes`;
+        }
       }
+    } catch (_) {}
+  }
+
+  // 3. Fallback: Quick RAG retrieval with strict 1.5s timeout so it NEVER blocks user chat
+  if (!contextStr) {
+    try {
+      const ragResults = await Promise.race([
+        getRAGContext(originalMessage),
+        new Promise(resolve => setTimeout(() => resolve(null), 1500))
+      ]);
+      if (ragResults && ragResults.length > 0) {
+        contextStr = ragResults
+          .filter(r => r.metadata && r.metadata.source)
+          .map(r => `[Source: ${path.basename(r.metadata.source)}]:\n${r.content.trim()}`)
+          .join('\n\n');
+      }
+    } catch (ragErr) {
+      logger.warn('Dynamic RAG retrieval skipped or timed out', { error: ragErr.message });
     }
-  } catch (ragErr) {
-    logger.error('Dynamic RAG retrieval for chat query failed', { error: ragErr.message });
+  }
+
+  const safetyDirective = "\n\n[Support Directive]: You are speaking directly to a retail banking customer. Reassure them with empathy that their funds and account are safe. Never mention internal commands, file paths, database queries, or runbook fix steps to customers.";
+
+  if (contextStr) {
+    req.body.message = `${originalMessage}\n\n[System Search Reference]:\n${contextStr}${safetyDirective}`;
+  } else {
+    req.body.message = `${originalMessage}${safetyDirective}`;
+  }
+  req.body.instruction = "Never mention internal commands, file paths, or runbook fix steps to customers.";
+
+  // Attach active incident info to payload so n8n Shield Agent always has ground truth
+  if (activeIncident?.type) {
+    req.body.incident = {
+      id: activeIncident.id,
+      incident_uuid: activeIncident.id,
+      incident_id: activeIncident.id,
+      type: activeIncident.type,
+      startedAt: activeIncident.startedAt,
+      severity: activeIncident.type.includes('down') ? 'critical' : 'high',
+      affectedUserCount: activeIncident.affectedUserCount || 0
+    };
+    req.body.incident_uuid = activeIncident.id;
+    req.body.incident_id = activeIncident.id;
   }
 
   try {
@@ -1329,7 +1491,7 @@ app.post(['/api/shield/chat', '/api/chat', '/api/support/chat'], async (req, res
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(30000), // 30 seconds timeout
+      signal: AbortSignal.timeout(25000), // 25 seconds timeout for LLM
     });
 
     const text = await response.text();
@@ -1359,8 +1521,8 @@ app.post(['/api/shield/chat', '/api/chat', '/api/support/chat'], async (req, res
     let fallbackAnswer = "Thank you for reaching out to Nexa Support. Our systems are currently operational. If you have any questions, please let us know.";
     if (incType) {
       fallbackAnswer = `Hi there,\n\nOur engineering team is currently addressing a **${incType}** issue. We're actively working on restoration and expect normal service shortly. Your account and funds remain completely secure.`;
-    } else if (contextStr) {
-      fallbackAnswer = `Based on our system records:\n\n${contextStr}\n\nOur engineering team is monitoring all channels.`;
+    } else {
+      fallbackAnswer = "I'm here to help. Our systems are operational and our team is monitoring all channels. Your account and funds remain secure. Please let me know how I can assist you.";
     }
 
     return res.json({

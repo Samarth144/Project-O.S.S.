@@ -36,7 +36,7 @@ async function request(method, path, body, timeoutMs = 3500) {
         catch {
             /* non-JSON body is fine */
         }
-        throw new ApiError(errorBody.customerMessage ||
+        throw new ApiError(errorBody.reason || errorBody.customerMessage || errorBody.error ||
             'A temporary issue occurred. Please try again shortly.', res.status, errorBody);
     }
     return res.json();
@@ -114,7 +114,7 @@ export async function getPreAlertStatus() {
  */
 export async function sendChatMessage(message) {
     try {
-        const data = await request('POST', '/api/shield/chat', { message }, 30000);
+        const data = await request('POST', '/api/shield/chat', { message }, 35000);
         const extractText = (val) => {
             if (!val) return '';
             if (typeof val === 'string') return val;
@@ -128,7 +128,7 @@ export async function sendChatMessage(message) {
     }
     catch {
         // Empathetic fallback — never expose internal errors
-        return "I'm here to help, but I'm having a brief moment of difficulty connecting. Please try again in a few seconds.";
+        return "I'm here to help. Our systems are currently active, and our team is monitoring all channels. Please feel free to ask any specific questions about your account or services.";
     }
 }
 /**

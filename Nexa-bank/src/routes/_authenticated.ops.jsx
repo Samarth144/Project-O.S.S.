@@ -15,7 +15,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { useEffect, useState, useRef } from "react";
 import { Activity, Cpu, Database, Wifi, AlertTriangle, CheckCircle2, RefreshCw, Server, Zap, Users, Clock, FileText, Radio, } from "lucide-react";
-import { getMetrics } from "@/lib/api";
+import { getMetrics, resolveIncident } from "@/lib/api";
 import { useIncidentBus } from "@/hooks/useIncidentBus";
 export const Route = createFileRoute("/_authenticated/ops")({
     head: () => ({
@@ -97,6 +97,8 @@ function OpsPage() {
     const [refreshing, setRefreshing] = useState(false);
     const [selectedIncident, setSelectedIncident] = useState("payment_down");
     const [actionRunning, setActionRunning] = useState(null);
+    const [escalated, setEscalated] = useState(false);
+    const [escalationReason, setEscalationReason] = useState("");
     const timerRef = useRef(null);
     const isIncidentActive = incident !== null;
     const refreshMetrics = async () => {
@@ -126,6 +128,8 @@ function OpsPage() {
         if (actionRunning || isIncidentActive)
             return;
         setActionRunning("simulate");
+        setEscalated(false);
+        setEscalationReason("");
         try {
             await triggerIncident(selectedIncident);
         }
@@ -144,9 +148,30 @@ function OpsPage() {
         setActionRunning("heal");
         try {
             await healIncident(currentType);
+            setEscalated(false);
+            setEscalationReason("");
         }
         catch (err) {
-            console.error("Failed to execute auto-heal:", err);
+            console.error("Auto-heal response:", err);
+            setEscalated(true);
+            setEscalationReason(err?.body?.reason || err?.message || "Max heal attempts exceeded. Manual intervention required.");
+        }
+        finally {
+            setActionRunning(null);
+            setLastRefresh(new Date());
+        }
+    };
+    const handleForceResolve = async () => {
+        if (actionRunning)
+            return;
+        setActionRunning("force");
+        try {
+            await resolveIncident();
+            setEscalated(false);
+            setEscalationReason("");
+        }
+        catch (err) {
+            console.error("Manual force resolve failed:", err);
         }
         finally {
             setActionRunning(null);
@@ -223,6 +248,23 @@ function OpsPage() {
             {actionRunning === "heal" ? "Healing..." : "Auto-Heal (Resolve)"}
           </button>
         </div>
+
+        {escalated && (
+          <div className="mt-4 p-3.5 rounded-xl border border-red-500/40 bg-red-500/10 text-red-200 text-xs flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+              <span>Auto-heal escalated to engineer: <strong className="font-semibold text-white">{escalationReason}</strong></span>
+            </div>
+            <button
+              onClick={handleForceResolve}
+              disabled={actionRunning === "force"}
+              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium text-xs transition flex items-center gap-1.5 shadow"
+            >
+              {actionRunning === "force" && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+              {actionRunning === "force" ? "Resolving..." : "Force Manual Resolve"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Live Telemetry */}
