@@ -308,6 +308,14 @@ async function sendResolvedIncidentApology(incident, resolvedAt) {
   }
 }
 
+function queueResolvedIncidentApology(incident, resolvedAt) {
+  setImmediate(() => {
+    sendResolvedIncidentApology(incident, resolvedAt).catch(error => {
+      logger.error('Queued incident apology email failed', { error: error.message });
+    });
+  });
+}
+
 // ---------------------------------------------------------
 // 2. Database Initialization
 // ---------------------------------------------------------
@@ -987,7 +995,7 @@ app.post('/resolve-incident', requireToken, async (req, res) => {
     return res.status(409).json({ success: false, error: 'Resolution already in progress or incident already cleared.' });
   }
 
-  await sendResolvedIncidentApology(result.prevIncident, result.resolvedAt);
+  queueResolvedIncidentApology(result.prevIncident, result.resolvedAt);
 
   res.json({
     success: true,
@@ -1179,7 +1187,7 @@ app.post('/auto-heal', requireToken, async (req, res) => {
         reason: 'resolution already in progress or already cleared'
       });
     }
-    await sendResolvedIncidentApology(resolved.prevIncident, resolved.resolvedAt);
+    queueResolvedIncidentApology(resolved.prevIncident, resolved.resolvedAt);
     logger.warn('Auto-remediation verified and successful. Engineers never got paged.');
     return res.json({
       healed: true,

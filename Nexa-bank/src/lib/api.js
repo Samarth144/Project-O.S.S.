@@ -26,7 +26,9 @@ async function request(method, path, body, timeoutMs = 3500) {
         res = await fetch(`${BASE_URL}${path}`, options);
     }
     catch (err) {
-        // Catch connection reset / timeout / offline backend errors gracefully
+        if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+            throw new ApiError('Express did not respond before the request timed out. Check the backend log; the operation may already have completed.', 504, { timedOut: true });
+        }
         throw new ApiError('Backend service is unreachable. Please ensure Express is running.', 503, { backendOffline: true, incidentActive: false });
     }
     if (!res.ok) {
