@@ -1,0 +1,87 @@
+{
+  "db_down": {
+    "totalPulls": 0,
+    "actions": {
+      "reset_pool": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "restart_db_conn": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "failover_replica": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "clear_locks": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      }
+    }
+  },
+  "payment_down": {
+    "totalPulls": 0,
+    "actions": {
+      "reset_gateway_pool": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "switch_backup_gateway": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "flush_retry_queue": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      }
+    }
+  },
+  "api_timeout": {
+    "totalPulls": 0,
+    "actions": {
+      "restart_workers": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "scale_workers": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "shed_load": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      }
+    }
+  },
+  "high_error_rate": {
+    "totalPulls": 0,
+    "actions": {
+      "rollback_deploy": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "flush_cache": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      },
+      "rate_limit_traffic": {
+        "pulls": 0,
+        "totalReward": 0,
+        "successes": 0
+      }
+    }
+  }
+}

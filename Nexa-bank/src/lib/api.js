@@ -212,3 +212,16 @@ export async function resolveIncident() {
 export async function autoHeal(type) {
     await request('POST', '/auto-heal', { type });
 }
+
+export async function getPolicy() {
+    return request('GET', '/api/policy');
+}
+export async function getPolicyRecommendation(type) {
+    return request('GET', `/api/policy/recommendation?type=${encodeURIComponent(type)}`);
+}
+export async function trainPolicy(type, episodes = 50) {
+    return request('POST', '/api/policy/train', { type, episodes }, 120000);
+}
+export async function resetPolicy() {
+    return request('POST', '/api/policy/reset', {});
+}
