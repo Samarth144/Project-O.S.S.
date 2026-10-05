@@ -778,7 +778,7 @@ app.post('/simulate-failure', requireToken, (req, res) => {
     incident_uuid,
     type,
     startedAt: new Date().toISOString(),
-    reporterEmail: reporterEmail || 'pranavjadhav1319@gmail.com',
+    reporterEmail: reporterEmail || 'samarthkumbhar8734@gmail.com',
     affectedUserCount: 0,
     affectedUsers: [],
     ragContext: null,
@@ -917,7 +917,7 @@ async function resolveActiveIncident(how = 'manual', command = null) {
     // Build affected customer list for Scribe apology outreach
     const affectedList = (prevIncident.affectedUsers && prevIncident.affectedUsers.length > 0)
       ? prevIncident.affectedUsers
-      : [prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com'];
+      : [prevIncident.reporterEmail || 'samarthkumbhar8734@gmail.com'];
 
     // Notify n8n Scribe for post-mortem logging (fire-and-forget)
     const resolvePayload = {
@@ -931,8 +931,8 @@ async function resolveActiveIncident(how = 'manual', command = null) {
       status: how === 'auto-healed' ? 'auto-healed' : 'resolved',
       resolvedBy: how,
       commandExecuted: command || (how === 'auto-healed' ? 'auto-remediation' : 'manual-override'),
-      reporterEmail: prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com',
-      reporter_email: prevIncident.reporterEmail || 'pranavjadhav1319@gmail.com',
+      reporterEmail: prevIncident.reporterEmail || 'samarthkumbhar8734@gmail.com',
+      reporter_email: prevIncident.reporterEmail || 'samarthkumbhar8734@gmail.com',
       affected_users: affectedList,
       affected_emails: affectedList.join(', '),
       affected_user_count: (prevIncident.affectedUsers && prevIncident.affectedUsers.length) || 0,
@@ -1427,7 +1427,7 @@ app.post('/api/banking/transfer', async (req, res, next) => {
 
   // Handle active incident — customer-friendly response
   if (activeIncident.type && ['payment_down', 'db_down', 'api_timeout', 'checkout_failure', 'service_degradation'].includes(activeIncident.type)) {
-    const customerEmail = req.body.userEmail || req.body.email || 'aarav.sharma@nexabank.com';
+    const customerEmail = req.body.userEmail || req.body.email || 'samarthkumbhar8734@gmail.com';
     if (!activeIncident.affectedUsers) {
       activeIncident.affectedUsers = [];
     }

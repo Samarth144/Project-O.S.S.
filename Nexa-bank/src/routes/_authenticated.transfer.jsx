@@ -17,7 +17,7 @@ function TransferPage() {
     const [amount, setAmount] = useState("0");
     const [remarks, setRemarks] = useState("");
     const [fromAcct, setFromAcct] = useState("savings");
-    const [senderEmail, setSenderEmail] = useState(user?.email || "pranavjadhav1319@gmail.com");
+    const [senderEmail, setSenderEmail] = useState(user?.email || "samarthkumbhar8734@gmail.com");
     const [state, setState] = useState("idle");
     const [successData, setSuccessData] = useState(null);
     const [transferError, setTransferError] = useState(null);
@@ -167,9 +167,9 @@ function TransferPage() {
           </div>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
             {[
+              { name: "Samarth Kumbhar", email: "samarthkumbhar8734@gmail.com" },
               { name: "Pranav Jadhav", email: "pranavjadhav1319@gmail.com" },
               { name: "Aarav Sharma", email: "aarav.sharma@nexabank.com" },
-              { name: "Priya Patel", email: "priya.patel@example.com" },
               { name: "Vikram Malhotra", email: "vikram.malhotra@corp.in" },
             ].map((customer) => {
               const active = senderEmail === customer.email;

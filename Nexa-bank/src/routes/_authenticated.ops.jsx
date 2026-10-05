@@ -238,9 +238,9 @@ function OpsPage() {
         setActionRunning("simUser");
         try {
             const demoUsers = [
+                "samarthkumbhar8734@gmail.com",
                 "pranavjadhav1319@gmail.com",
                 "aarav.sharma@nexabank.com",
-                "priya.patel@example.com",
                 "vikram.malhotra@corp.in",
                 "ananya.verma@techbank.in",
                 "rohan.mehta@startup.co",

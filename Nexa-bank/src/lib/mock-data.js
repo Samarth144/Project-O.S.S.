@@ -1,13 +1,13 @@
 import { useState, useEffect } from "react";
 export const user = {
-    name: "Aarav Sharma",
-    email: "aarav.sharma@nexabank.com",
+    name: "Samarth Kumbhar",
+    email: "samarthkumbhar8734@gmail.com",
     phone: "+91 98765 43210",
-    avatar: "AS",
+    avatar: "SK",
     kyc: "Verified",
-    since: "March 2019",
+    since: "March 2021",
     address: "12A, Marine Drive, Mumbai 400020",
-    dob: "1992-08-14",
+    dob: "2000-05-15",
     pan: "ABCDE1234F",
 };
 // Helper to generate dynamic ISO dates relative to today
