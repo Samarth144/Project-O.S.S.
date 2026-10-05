@@ -26,6 +26,7 @@ flowchart TB
         API["Express.js Server\n(Banking API & SSE Stream)"]
         SQLITE[("Local SQLite Database\n(project_oss.db)")]
         INCIDENT_MGR["Incident State Manager\n(Real-time Deduplication & Metrics)"]
+        RL_POLICY[("Self-Learning RL Policy\n(Multi-Armed Bandit / UCB1)")]
     end
 
     subgraph Monitoring["Telemetry Watchdog (Port 3100)"]
@@ -55,6 +56,7 @@ flowchart TB
     API <-->|State Upsert / Restore| SUPA_ACTIVE
     API -->|Live Telemetry| OPS
     API -->|Query Context| RAG
+    INCIDENT_MGR <-->|Sample Action & Reward| RL_POLICY
     
     WATCHDOG -.->|Health Probe & OS Metrics| API
     WATCHDOG -->|Alert: app_reachable true/false| OBSERVER
@@ -108,6 +110,23 @@ flowchart TB
 ### 5. Python RAG Knowledge Engine (`ai/`)
 * **Localized Vector Store:** Powered by **ChromaDB** and **SentenceTransformers** (`all-MiniLM-L6-v2`).
 * **Runbook Ingestion:** Indexes operational runbooks (`runbooks.json`) and past incident post-mortems into semantic vector embeddings for zero-latency lookups.
+
+### 6. Self-Learning Remediation Policy & RL Environment (`server/rl/`)
+* **Adaptive Multi-Armed Bandit:** Rather than statically executing fixed remediation sequences, Project O.S.S. embeds a **cost-aware Reinforcement Learning (RL) agent** that learns the optimal recovery strategy through experience.
+* **Upper Confidence Bound (UCB1) Algorithm:**
+  * **Training Mode:** Uses the UCB1 acquisition rule ($C = 0.5$) to balance exploration of uncertain actions with exploitation of proven fixes:
+    $$\text{Score}(a) = \frac{\text{TotalReward}(a)}{\text{Pulls}(a)} + C \cdot \sqrt{\frac{2 \ln(\text{TotalPulls})}{\text{Pulls}(a)}}$$
+  * **Live Production Mode:** Uses greedy exploitation based on historical mean reward to minimize downtime and prevent unnecessary system disruptions.
+* **Action Space & Cost-Penalty Matrix:**
+  * `db_down`: `reset_pool` (cost: 0.02), `restart_db_conn` (cost: 0.02), `failover_replica` (cost: 0.15), `clear_locks` (cost: 0.02)
+  * `payment_down`: `reset_gateway_pool` (cost: 0.02), `switch_backup_gateway` (cost: 0.15), `flush_retry_queue` (cost: 0.02)
+  * `api_timeout`: `restart_workers` (cost: 0.02), `scale_workers` (cost: 0.02), `shed_load` (cost: 0.15)
+  * `high_error_rate`: `rollback_deploy` (cost: 0.15), `flush_cache` (cost: 0.02), `rate_limit_traffic` (cost: 0.05)
+* **Cost-Aware Reward Function:** Penalizes intrusive actions (e.g., dropping customer traffic or promoting standby replicas) while rewarding rapid recovery:
+  $$\text{Reward} = \mathbb{I}(\text{Success}) - \text{Cost}(a)$$
+* **Deterministic Simulation Environment:** Powered by a seeded `Mulberry32` PRNG and realistic ground-truth recovery probabilities (`SIMULATOR_PROBS`). Supports synthetic training runs of up to 500 episodes without impacting real banking customers.
+* **Closed-Loop Online Learning:** Every real-world auto-healing attempt directly feeds back into the policy in real time, continually refining confidence scores and future recovery priorities.
+* **Interactive Ops Analytics (`/ops`):** The Ops dashboard provides live Recharts visualizations of episode learning curves (attempts per episode), action success rate breakdowns, and real-time decision confidence.
 
 ---
 
@@ -308,6 +327,17 @@ The Compose stack runs the Express API with its Python RAG dependencies, the Nex
 
 ---
 
+### Scenario 4: Train & Inspect the Self-Learning Remediation Policy (RL)
+1. Open the **Operations Center**: Navigate to `http://localhost:8081/ops`.
+2. Scroll down to the **Self-Learning Remediation Policy** section.
+3. Select an incident type (e.g., `db_down` or `payment_down`).
+4. Click **Train policy** — watch the interactive training animation cycle through exploration steps.
+5. Observe the **Attempts per episode** line chart flatten toward 1 attempt as the UCB1 policy learns which action has the highest recovery rate.
+6. Inspect the **Action Success Rates** bar chart to review empirical probabilities and confidence metrics.
+7. Trigger an active incident — notice the auto-heal engine uses the newly trained policy recommendation to resolve the outage on attempt #1!
+
+---
+
 ## 📂 Repository Structure
 
 ```
@@ -328,6 +358,10 @@ Project O.S.S/
 │   ├── rag/                        # Ingestion & ChromaDB Retrieval Scripts
 │   ├── knowledge_base/             # Incident Runbooks & Historic Data
 │   └── requirements.txt            # Python Dependencies
+├── server/                         # Server Subsystems
+│   └── rl/                         # Reinforcement Learning Remediation Engine
+│       ├── rl-policy.js            # Multi-Armed Bandit / UCB1 Policy Implementation
+│       └── policy.json             # Persistent RL Policy State & Training Curves
 ├── server.js                       # Express Backend, Banking API & SSE Server
 ├── telemetry-watchdog.js           # Autonomous APM Watchdog Monitor
 ├── runbooks.json                   # Automated Remediation Runbook Definitions
