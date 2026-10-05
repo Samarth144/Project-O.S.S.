@@ -1903,7 +1903,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start Server — restore any active incident from Supabase BEFORE accepting connections
-app.listen(PORT, async () => {
+app.listen(PORT, '0.0.0.0', async () => {
   logger.info(`Server successfully started on port ${PORT}`, {
     env: process.env.NODE_ENV || 'development',
     pid: process.pid
