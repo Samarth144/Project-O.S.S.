@@ -13,6 +13,7 @@ const CONFIG = {
   logPath:         process.env.LOG_PATH         || path.join(__dirname, 'project_oss.log'),
   pollMs:          Number(process.env.POLL_MS)  || 15000,   // 15s → detection lag ≤ breach*15s
   metricsPort:     Number(process.env.WATCHDOG_PORT) || 3100,
+  metricsHost:     process.env.WATCHDOG_HOST || '0.0.0.0',
   deadLetterPath:  process.env.DEAD_LETTER_PATH || path.join(__dirname, 'watchdog-dead-letters.jsonl'),
   historySize:     120,                                     // 30 min at 15s polls
 };
@@ -323,7 +324,7 @@ http.createServer((req, res) => {
     res.statusCode = 404;
     res.end('{}');
   }
-}).listen(CONFIG.metricsPort, () =>
+}).listen(CONFIG.metricsPort, CONFIG.metricsHost, () =>
   console.log(`[WATCHDOG] Metrics server on :${CONFIG.metricsPort}/metrics`));
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
