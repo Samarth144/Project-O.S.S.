@@ -19,6 +19,9 @@ logs/*.log
 *.log
 *.db
 *.db-journal
+apology-email-outbox.json
+apology-email-outbox.json.tmp
+mail-data/
 chroma_db/
 ai/chroma_db/
 watchdog-dead-letters.jsonl

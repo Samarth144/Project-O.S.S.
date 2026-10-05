@@ -13,7 +13,7 @@ const CONFIG = {
   logPath:         process.env.LOG_PATH         || path.join(__dirname, 'project_oss.log'),
   pollMs:          Number(process.env.POLL_MS)  || 15000,   // 15s → detection lag ≤ breach*15s
   metricsPort:     Number(process.env.WATCHDOG_PORT) || 3100,
-  deadLetterPath:  path.join(__dirname, 'watchdog-dead-letters.jsonl'),
+  deadLetterPath:  process.env.DEAD_LETTER_PATH || path.join(__dirname, 'watchdog-dead-letters.jsonl'),
   historySize:     120,                                     // 30 min at 15s polls
 };
 

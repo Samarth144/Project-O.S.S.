@@ -1,0 +1,8 @@
+node_modules
+dist
+.output
+.tanstack
+.vinxi
+.env
+.env.*
+npm-debug.log*

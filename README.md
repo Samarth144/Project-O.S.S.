@@ -30,7 +30,7 @@ Project O.S.S. is an automated incident detection, response, and remediation sys
 ```
 
 The platform is composed of four main components:
-1. **Express Server (Port 3000):** Exposes application endpoints, database queries, and incident simulation utilities.
+1. **Express Server (Port 3000):** Exposes application endpoints, in-memory demo banking data, and incident simulation utilities.
 2. **Python RAG Engine:** A localized LangChain-based vector database (using ChromaDB and Sentence-Transformers) containing system runbooks and historical incident logs.
 3. **Telemetry Watchdog (Port 3100):** A standalone, out-of-process monitor that tracks CPU, memory, database latency, and log error tails.
 4. **n8n Agent Workflows (Port 5678):** Hosts three specialized agents:
@@ -129,6 +129,28 @@ SMTP_FROM=your-verified-sender@example.com
 ```
 
 `SMTP_FROM` defaults to `SMTP_USER`. Port 465 defaults to secure TLS. If `SMTP_HOST` or a sender address is missing, incident handling continues and the email is skipped with a log entry.
+
+### Docker deployment
+
+The Compose stack runs the Express API with its Python RAG dependencies, the Nexa Bank UI, the telemetry watchdog, and an Nginx reverse proxy. The UI and API share one browser origin, so the frontend can also be deployed on a remote host without calling the visitor's `localhost`.
+
+1. Install Docker Engine with the Compose plugin.
+2. Copy `.env.example` to `.env` and add SMTP credentials. Set the n8n webhook URLs and Supabase credentials if those integrations are enabled. Keep `.env` private.
+3. Build and start the stack:
+   ```bash
+   docker compose up --build -d
+   ```
+4. Open `http://localhost:8080` (or the port set by `WEB_PORT`). Check service output with `docker compose logs -f api watchdog frontend web`.
+
+The API, UI, and watchdog communicate over the Compose network. Only the web proxy is published to the host. n8n and Supabase are external services; the default n8n URLs expect n8n to be running on the Docker host at port 5678. Override the webhook URLs in `.env` when n8n is elsewhere.
+
+The `app-data` Docker volume stores the Chroma index, Hugging Face model cache, policy training data, logs, and pending apology emails. Demo users, products, carts, balances, and transactions are in memory and reset when the API container restarts. To ingest the knowledge base into the persistent vector store, run:
+
+```bash
+docker compose exec api /opt/ai-venv/bin/python ai/rag/ingest.py
+```
+
+Use `docker compose down` to stop the stack while retaining its volume.
 
 ---
 

@@ -1,10 +1,10 @@
 const express = require('express');
-const Database = require('better-sqlite3');
 const winston = require('winston');
 const nodemailer = require('nodemailer');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 let createClient;
 try {
@@ -178,7 +178,7 @@ function broadcastSSE(eventName, data) {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const LOG_FILE = 'project_oss.log';
+const LOG_FILE = process.env.LOG_FILE || path.join(__dirname, 'project_oss.log');
 
 // ---------------------------------------------------------
 // 1. Winston Logger Setup
@@ -293,106 +293,110 @@ Reference: ${incidentId}`;
       logger.error('Incident apology email failed', { type, recipient, error: delivery.reason?.message });
     }
   });
+  return deliveries.every(delivery => delivery.status === 'fulfilled');
 }
 
 async function sendResolvedIncidentApology(incident, resolvedAt) {
-  if (!incident?.type) return;
+  if (!incident?.type) return false;
   logger.info('Sending post-incident apology email', {
     type: incident.type,
     incidentId: incident.id || incident.incident_uuid
   });
   try {
-    await sendIncidentApology(incident.type, { ...incident, resolvedAt });
+    return await sendIncidentApology(incident.type, { ...incident, resolvedAt });
   } catch (error) {
     logger.error('Incident apology email handler failed', { type: incident.type, error: error.message });
+    return false;
   }
+}
+
+let apologyOutboxRunning = false;
+const OUTBOX_DIRECTORY = process.env.DATA_DIR || path.join(os.tmpdir(), 'project-oss-mail-data');
+fs.mkdirSync(OUTBOX_DIRECTORY, { recursive: true });
+const APOLOGY_OUTBOX_PATH = path.join(OUTBOX_DIRECTORY, 'apology-email-outbox.json');
+
+function readApologyOutbox() {
+  try {
+    return JSON.parse(fs.readFileSync(APOLOGY_OUTBOX_PATH, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') logger.error('Could not read apology email outbox', { error: error.message });
+    return [];
+  }
+}
+
+function writeApologyOutbox(jobs) {
+  const temporaryPath = `${APOLOGY_OUTBOX_PATH}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(jobs, null, 2));
+  fs.renameSync(temporaryPath, APOLOGY_OUTBOX_PATH);
 }
 
 function queueResolvedIncidentApology(incident, resolvedAt) {
-  setImmediate(() => {
-    sendResolvedIncidentApology(incident, resolvedAt).catch(error => {
-      logger.error('Queued incident apology email failed', { error: error.message });
-    });
-  });
+  if (!incident?.type) return;
+  const incidentId = String(incident.id || incident.incident_uuid || crypto.randomUUID());
+  const jobs = readApologyOutbox();
+  if (!jobs.some(job => job.incident_id === incidentId)) {
+    jobs.push({ incident_id: incidentId, incident_type: incident.type, incident, resolved_at: resolvedAt, status: 'pending', attempts: 0 });
+    writeApologyOutbox(jobs);
+  }
+  logger.info('Incident apology email queued', { incidentId });
+  setImmediate(processPendingApologyEmails);
 }
 
-// ---------------------------------------------------------
-// 2. Database Initialization
-// ---------------------------------------------------------
-let db;
-try {
-  db = new Database('project_oss.db', { verbose: (msg) => logger.debug(msg) });
-  logger.info('Database initialized successfully: project_oss.db');
-  
-  // Create tables if they do not exist
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      price REAL NOT NULL,
-      stock INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS cart_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      quantity INTEGER NOT NULL,
-      FOREIGN KEY (product_id) REFERENCES products(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      amount REAL NOT NULL,
-      status TEXT NOT NULL,
-      transaction_id TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS accounts (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      account_number TEXT NOT NULL,
-      balance REAL NOT NULL,
-      ifsc TEXT NOT NULL
-    );
-  `);
-
-  // Seed default bank accounts if empty
-  const accountCount = db.prepare('SELECT count(*) as count FROM accounts').get();
-  if (accountCount.count === 0) {
-    db.prepare('INSERT INTO accounts (id, name, account_number, balance, ifsc) VALUES (?, ?, ?, ?, ?)').run('savings', 'Savings Account', '•••• 4521', 1524890.50, 'NEXA0001234');
-    db.prepare('INSERT INTO accounts (id, name, account_number, balance, ifsc) VALUES (?, ?, ?, ?, ?)').run('current', 'Current Account', '•••• 8873', 987633.25, 'NEXA0001234');
-    logger.info('Seeded default bank accounts in SQLite.');
+async function processPendingApologyEmails() {
+  if (apologyOutboxRunning) return;
+  apologyOutboxRunning = true;
+  try {
+    while (true) {
+      const jobs = readApologyOutbox();
+      const job = jobs.find(item => item.status === 'pending');
+      if (!job) break;
+      job.status = 'sending';
+      job.attempts = (job.attempts || 0) + 1;
+      writeApologyOutbox(jobs);
+      try {
+        const sent = await sendResolvedIncidentApology(job.incident, job.resolved_at);
+        if (!sent) throw new Error('One or more recipient deliveries failed or SMTP is not configured');
+        const remainingJobs = readApologyOutbox().filter(item => item.incident_id !== job.incident_id);
+        writeApologyOutbox(remainingJobs);
+        logger.info('Queued incident apology email completed', { incidentId: job.incident_id });
+      } catch (error) {
+        const remainingJobs = readApologyOutbox();
+        const failedJob = remainingJobs.find(item => item.incident_id === job.incident_id);
+        if (failedJob) {
+          failedJob.status = 'pending';
+          failedJob.last_error = error.message;
+          writeApologyOutbox(remainingJobs);
+        }
+        logger.error('Queued incident apology email retry scheduled', {
+          incidentId: job.incident_id,
+          error: error.message
+        });
+        const retryTimer = setTimeout(processPendingApologyEmails, Math.min(300000, 30000 * job.attempts));
+        retryTimer.unref();
+      }
+    }
+  } finally {
+    apologyOutboxRunning = false;
   }
-
-  // Seed default data if users table is empty
-  const userCount = db.prepare('SELECT count(*) as count FROM users').get();
-  if (userCount.count === 0) {
-    db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run('admin', 'password123');
-    logger.info('Seeded default admin user.');
-  }
-
-  // Seed default products if empty
-  const productCount = db.prepare('SELECT count(*) as count FROM products').get();
-  if (productCount.count === 0) {
-    const insertProd = db.prepare('INSERT INTO products (name, price, stock) VALUES (?, ?, ?)');
-    insertProd.run('Quantum Processor Unit', 899.99, 15);
-    insertProd.run('Holographic Display V1', 349.99, 30);
-    insertProd.run('Superfluid Cooling Gel', 24.50, 120);
-    insertProd.run('Gravity Boots (Refurbished)', 149.99, 8);
-    logger.info('Seeded default products.');
-  }
-
-} catch (error) {
-  logger.error('Failed to initialize database', { error: error.message, stack: error.stack });
-  process.exit(1);
 }
+
+// Demo data stays in memory and resets whenever the server restarts.
+const demoStore = {
+  users: [{ username: 'admin', password: 'password123' }],
+  products: [
+    { id: 1, name: 'Quantum Processor Unit', price: 899.99, stock: 15 },
+    { id: 2, name: 'Holographic Display V1', price: 349.99, stock: 30 },
+    { id: 3, name: 'Superfluid Cooling Gel', price: 24.50, stock: 120 },
+    { id: 4, name: 'Gravity Boots (Refurbished)', price: 149.99, stock: 8 },
+  ],
+  cartItems: [],
+  payments: [],
+  accounts: [
+    { id: 'savings', name: 'Savings Account', account_number: '•••• 4521', balance: 1524890.50, ifsc: 'NEXA0001234' },
+    { id: 'current', name: 'Current Account', account_number: '•••• 8873', balance: 987633.25, ifsc: 'NEXA0001234' },
+  ],
+};
+let nextPaymentId = 1;
 
 // ---------------------------------------------------------
 // 3. Incident State Setup
@@ -463,10 +467,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Database Runner Wrapper (handles db_down incident)
+// In-memory demo data runner (preserves the simulated db_down incident behavior)
 function runDbQuery(queryFn) {
   if (activeIncident.type === 'db_down') {
-    const dbError = new Error('SqliteError: cannot acquire lock, connection timed out or pool exhausted');
+    const dbError = new Error('Simulated database connection unavailable');
     logger.error('Database query failed', {
       error: dbError.message,
       stack: dbError.stack,
@@ -510,6 +514,7 @@ const N8N_WEBHOOKS = {
   shield:    process.env.N8N_SHIELD_WEBHOOK    || 'http://localhost:5678/webhook/Shield',
   commander: process.env.N8N_COMMANDER_WEBHOOK || 'http://localhost:5678/webhook/Commander',
 };
+const WATCHDOG_URL = process.env.WATCHDOG_URL || 'http://localhost:3100';
 
 // Trigger n8n Commander workflow to autonomously execute auto-heal
 // Called non-blocking — Express never waits for Commander to finish
@@ -518,7 +523,7 @@ async function triggerCommander(incidentType, startedAt) {
     type:       incidentType,
     startedAt:  startedAt || new Date().toISOString(),
     source:     'express-server',
-    autoHealUrl: `http://localhost:${process.env.PORT || 3000}/auto-heal`,
+      autoHealUrl: `${process.env.INTERNAL_API_URL || `http://localhost:${process.env.PORT || 3000}`}/auto-heal`,
   };
   try {
     logger.info(`[Commander] Triggering autonomous remediation for [${incidentType}]`, { payload });
@@ -550,9 +555,7 @@ async function triggerCommander(incidentType, startedAt) {
 // GET /products - Retrieve list of available products
 app.get('/products', (req, res, next) => {
   try {
-    const products = runDbQuery(() => {
-      return db.prepare('SELECT * FROM products').all();
-    });
+    const products = runDbQuery(() => demoStore.products.map(product => ({ ...product })));
     
     logger.info('Products fetched successfully', { count: products.length, requestId: req.id });
     res.json({ success: true, products });
@@ -571,9 +574,7 @@ app.post('/login', (req, res, next) => {
   }
 
   try {
-    const user = runDbQuery(() => {
-      return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-    });
+    const user = runDbQuery(() => demoStore.users.find(candidate => candidate.username === username));
 
     if (!user || user.password !== password) {
       logger.warn('Authentication failed: Invalid credentials', { username, requestId: req.id });
@@ -602,9 +603,7 @@ app.post('/cart', (req, res, next) => {
 
   try {
     // Verify product exists and check stock
-    const product = runDbQuery(() => {
-      return db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
-    });
+    const product = runDbQuery(() => demoStore.products.find(candidate => candidate.id === Number(productId)));
 
     if (!product) {
       logger.warn('Add to cart failed: Product not found', { productId, requestId: req.id });
@@ -618,14 +617,9 @@ app.post('/cart', (req, res, next) => {
 
     // Insert or update cart
     runDbQuery(() => {
-      const existing = db.prepare('SELECT * FROM cart_items WHERE product_id = ?').get(productId);
-      if (existing) {
-        db.prepare('UPDATE cart_items SET quantity = quantity + ? WHERE product_id = ?')
-          .run(quantity, productId);
-      } else {
-        db.prepare('INSERT INTO cart_items (product_id, quantity) VALUES (?, ?)')
-          .run(productId, quantity);
-      }
+      const existing = demoStore.cartItems.find(item => item.product_id === Number(productId));
+      if (existing) existing.quantity += Number(quantity);
+      else demoStore.cartItems.push({ product_id: Number(productId), quantity: Number(quantity) });
     });
 
     logger.info('Product added/updated in cart', { productId, quantity, requestId: req.id });
@@ -654,13 +648,10 @@ app.post('/checkout', async (req, res, next) => {
     }
 
     // Retrieve items in cart
-    const cartItems = runDbQuery(() => {
-      return db.prepare(`
-        SELECT c.id, c.product_id, c.quantity, p.name, p.price, p.stock 
-        FROM cart_items c 
-        JOIN products p ON c.product_id = p.id
-      `).all();
-    });
+    const cartItems = runDbQuery(() => demoStore.cartItems.map(item => {
+      const product = demoStore.products.find(candidate => candidate.id === item.product_id);
+      return product ? { ...item, name: product.name, price: product.price, stock: product.stock } : null;
+    }).filter(Boolean));
 
     if (cartItems.length === 0) {
       logger.warn('Checkout failed: Cart is empty', { requestId: req.id });
@@ -685,17 +676,11 @@ app.post('/checkout', async (req, res, next) => {
 
     // Complete transaction: update stock & clear cart
     runDbQuery(() => {
-      const updateStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
-      const clearCart = db.prepare('DELETE FROM cart_items');
-
-      // Use a transaction
-      const transaction = db.transaction(() => {
-        for (const item of cartItems) {
-          updateStock.run(item.quantity, item.product_id);
-        }
-        clearCart.run();
-      });
-      transaction();
+      for (const item of cartItems) {
+        const product = demoStore.products.find(candidate => candidate.id === item.product_id);
+        if (product) product.stock -= item.quantity;
+      }
+      demoStore.cartItems = [];
     });
 
     logger.info('Checkout processed successfully', { itemsCount: cartItems.length, totalAmount: total, requestId: req.id });
@@ -745,10 +730,9 @@ app.post('/payment', async (req, res, next) => {
   try {
     const txId = `TXN-${Math.random().toString(36).substring(2, 11).toUpperCase()}`;
 
-    runDbQuery(() => {
-      db.prepare('INSERT INTO payments (amount, status, transaction_id, created_at) VALUES (?, ?, ?, ?)')
-        .run(amount, 'APPROVED', txId, new Date().toISOString());
-    });
+    runDbQuery(() => demoStore.payments.push({
+      id: nextPaymentId++, amount, status: 'APPROVED', transaction_id: txId, created_at: new Date().toISOString()
+    }));
 
     logger.info('Payment approved successfully', { transactionId: txId, amount, paymentMethod, requestId: req.id });
     res.json({ success: true, status: 'APPROVED', transactionId: txId });
@@ -867,19 +851,9 @@ function requireToken(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized: Invalid or missing token.' });
 }
 
-/**
- * selfCheck:
- * Probes the SQLite database directly to confirm the database engine
- * and disk file are healthy and accepting queries.
- */
+/** The simulator's in-memory data store is available while the process is running. */
 async function selfCheck() {
-  try {
-    const res = db.prepare('SELECT 1 as alive').get();
-    return res && res.alive === 1;
-  } catch (err) {
-    logger.error('[Self-Check] Database probe failed:', { error: err.message });
-    return false;
-  }
+  return true;
 }
 
 let lastPolicyDecision = null;
@@ -1010,6 +984,7 @@ app.post('/resolve-incident', requireToken, async (req, res) => {
 const { exec } = require('child_process');
 
 function getPythonCommand() {
+  if (process.env.PYTHON_BIN) return `"${process.env.PYTHON_BIN}"`;
   const venvWindows = path.join(__dirname, 'ai', 'venv', 'Scripts', 'python.exe');
   const venvUnix = path.join(__dirname, 'ai', 'venv', 'bin', 'python');
   if (fs.existsSync(venvWindows)) {
@@ -1359,7 +1334,7 @@ app.get('/health', (req, res) => {
       ok: false,
       error: activeIncident.type === 'payment_down'
         ? 'Payment gateway connection reset: socket failure'
-        : 'SQLite connection pool exhausted: locked database file',
+        : 'Demo data service unavailable',
       dbLatencyMs: 2000.0,
       uptime: process.uptime(),
     });
@@ -1375,24 +1350,18 @@ app.get('/health', (req, res) => {
     });
   }
 
-  try {
-    db.prepare('SELECT 1').get();
-    const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
-    res.json({
-      ok: true,
-      dbLatencyMs: +dbLatencyMs.toFixed(1),
-      uptime: process.uptime(),
-    });
-  } catch (err) {
-    const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
-    res.status(500).json({ ok: false, error: err.message, dbLatencyMs });
-  }
+  const dbLatencyMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  res.json({
+    ok: true,
+    dbLatencyMs: +dbLatencyMs.toFixed(1),
+    uptime: process.uptime(),
+  });
 });
 
 // ─── 2. Metrics proxy (Shield UI keeps calling /api/metrics unchanged) ──────
 app.get('/api/metrics', async (req, res) => {
   try {
-    const r = await fetch('http://localhost:3100/metrics', {
+    const r = await fetch(`${WATCHDOG_URL}/metrics`, {
       signal: AbortSignal.timeout(600), // 600ms fast timeout if watchdog is offline
     });
     res.json(await r.json());
@@ -1520,17 +1489,15 @@ app.post('/api/banking/transfer', async (req, res, next) => {
     let remainingBalance = 0;
 
     runDbQuery(() => {
-      // 1. Record the transaction in payments table
-      db.prepare('INSERT INTO payments (amount, status, transaction_id, created_at) VALUES (?, ?, ?, ?)')
-        .run(numAmount, 'APPROVED', txId, new Date().toISOString());
-
-      // 2. Deduct balance from the source account in SQLite
-      db.prepare('UPDATE accounts SET balance = MAX(0, balance - ?) WHERE id = ?')
-        .run(numAmount, fromAcctKey);
-
-      // 3. Fetch remaining balance
-      const row = db.prepare('SELECT balance FROM accounts WHERE id = ?').get(fromAcctKey);
-      if (row) remainingBalance = row.balance;
+      demoStore.payments.push({
+        id: nextPaymentId++, amount: numAmount, status: 'APPROVED', transaction_id: txId,
+        created_at: new Date().toISOString()
+      });
+      const account = demoStore.accounts.find(candidate => candidate.id === fromAcctKey);
+      if (account) {
+        account.balance = Math.max(0, account.balance - numAmount);
+        remainingBalance = account.balance;
+      }
     });
 
     logger.info('[Banking API] Transfer approved & balance deducted', {
@@ -1568,24 +1535,15 @@ app.post('/api/banking/transfer', async (req, res, next) => {
   }
 });
 
-// GET /api/banking/accounts — Live account balances from SQLite
+// GET /api/banking/accounts — Live account balances from in-memory demo data
 app.get('/api/banking/accounts', (req, res) => {
-  try {
-    const list = db.prepare('SELECT * FROM accounts').all();
-    res.json({ success: true, accounts: list });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  res.json({ success: true, accounts: demoStore.accounts.map(account => ({ ...account })) });
 });
 
-// GET /api/banking/transactions — Live recent transactions from SQLite
+// GET /api/banking/transactions — Live recent transactions from in-memory demo data
 app.get('/api/banking/transactions', (req, res) => {
-  try {
-    const list = db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 20').all();
-    res.json({ success: true, transactions: list });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  const list = demoStore.payments.slice(-20).reverse().map(payment => ({ ...payment }));
+  res.json({ success: true, transactions: list });
 });
 
 // GET /api/banking/status — Lightweight service availability check
@@ -1830,10 +1788,10 @@ function generateNoiseLogs(type) {
       { level: 'error', message: 'Payment gateway marked OFFLINE after maximum retries exhausted' }
     ],
     db_down: [
-      { level: 'error', message: 'SQLite connection pool exhausted: locked database file' },
+      { level: 'error', message: 'Demo data service unavailable' },
       { level: 'error', message: 'Database query failed for transaction log: disk I/O error' },
       { level: 'error', message: 'DB query failure: SELECT * FROM products WHERE stock > 0 (Connection lost)' },
-      { level: 'error', message: 'Database driver reported unrecoverable error state: SqliteError: database is locked' },
+      { level: 'error', message: 'In-memory data service reported an unrecoverable error state' },
       { level: 'error', message: 'Backend failing healthcheck: DB_CONNECTION_DOWN' }
     ],
     api_timeout: [
@@ -1952,4 +1910,15 @@ app.listen(PORT, async () => {
   });
   // Restore in-memory incident state from Supabase so the server never wakes up blind
   await restoreIncidentFromSupabase();
+  // Retry email jobs whose previous process was interrupted during delivery.
+  const pendingJobs = readApologyOutbox();
+  let resetInterruptedJobs = false;
+  for (const job of pendingJobs) {
+    if (job.status === 'sending') {
+      job.status = 'pending';
+      resetInterruptedJobs = true;
+    }
+  }
+  if (resetInterruptedJobs) writeApologyOutbox(pendingJobs);
+  await processPendingApologyEmails();
 });

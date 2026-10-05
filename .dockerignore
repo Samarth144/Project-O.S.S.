@@ -1,7 +1,15 @@
 node_modules
+**/node_modules
+ai/venv
+**/__pycache__
+*.pyc
 npm-debug.log
 project_oss.db
 project_oss.db-journal
+apology-email-outbox.json
+mail-data
+.env
+ai/.env
 project_oss.log
 .git
 .gitignore

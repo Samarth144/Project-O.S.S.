@@ -8,7 +8,7 @@
  *   Frontend → Express (3000) ONLY
  *   Express → RAG / n8n / Watchdog (never from frontend)
  */
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3000' : '/backend');
 // ─── Generic request helper ──────────────────────────────────────────────────
 async function request(method, path, body, timeoutMs = 3500) {
     const options = {

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const POLICY_FILE = path.join(__dirname, 'policy.json');
+const POLICY_FILE = process.env.POLICY_FILE || path.join(__dirname, 'policy.json');
 const DEFAULT_ACTIONS = {
   db_down: ['reset_pool', 'restart_db_conn', 'failover_replica', 'clear_locks'],
   payment_down: ['reset_gateway_pool', 'switch_backup_gateway', 'flush_retry_queue'],
