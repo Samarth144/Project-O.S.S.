@@ -1,16 +1,18 @@
 import os
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 
 class VectorStoreManager:
-    def __init__(self, persist_directory=None, embedding_model_name="all-MiniLM-L6-v2"):
+    def __init__(self, persist_directory=None):
         if persist_directory is None:
             persist_directory = os.environ.get(
                 "CHROMA_DB_DIR",
                 os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "chroma_db")),
             )
         self.persist_directory = persist_directory
-        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+        # Let Chroma use its built-in all-MiniLM-L6-v2 embedding function. This
+        # avoids importing sentence-transformers/PyTorch while keeping the same
+        # default model used by the previous HuggingFaceEmbeddings setup.
+        self.embeddings = None
         self.vector_store = self._init_vector_store()
 
     def _init_vector_store(self):

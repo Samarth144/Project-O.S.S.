@@ -1,7 +1,6 @@
 import os
 from typing import List, Optional
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
@@ -11,7 +10,6 @@ class AegisHybridRetriever:
     def __init__(self, persist_directory="./chroma_db"):
         self.vsm = VectorStoreManager(persist_directory=persist_directory)
         self.vector_store = self.vsm.vector_store
-        self.embeddings = self.vsm.embeddings
 
     def _get_all_documents(self) -> List[Document]:
         """Helper to fetch all documents from the vector store for BM25 initialization."""
