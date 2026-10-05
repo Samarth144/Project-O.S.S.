@@ -10,6 +10,7 @@ const env = {
   WATCHDOG_URL: process.env.WATCHDOG_URL || 'http://127.0.0.1:3100',
   WATCHDOG_PORT: process.env.WATCHDOG_PORT || '3100',
   WATCHDOG_HOST: process.env.WATCHDOG_HOST || '127.0.0.1',
+  OBSERVER_WEBHOOK: process.env.OBSERVER_WEBHOOK || process.env.N8N_OBSERVER_WEBHOOK || 'http://localhost:5678/webhook/Observer',
   APP_URL: process.env.APP_URL || `http://127.0.0.1:${port}`,
 };
 
